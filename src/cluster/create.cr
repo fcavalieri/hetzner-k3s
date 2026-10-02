@@ -1,4 +1,5 @@
 require "../configuration/loader"
+require "../hetzner/network/ensure_layout"
 require "../hetzner/ssh_key/create"
 require "../kubernetes/installer"
 require "../util/ssh"
@@ -8,6 +9,7 @@ require "./instance_builder"
 require "./load_balancer_manager"
 require "./network_manager"
 require "./placement_group_manager"
+require "./vswitch_manager"
 
 class Cluster::Create
   private getter configuration : Configuration::Loader
@@ -53,6 +55,7 @@ class Cluster::Create
     @placement_group_manager = PlacementGroupManager.new(settings, hetzner_client)
 
     @network = network_manager.find_or_create if settings.networking.private_network.enabled
+    @network = ensure_network_layout(@network)
     @ssh_key = create_ssh_key
     static_worker_node_pools = settings.worker_node_pools.reject(&.autoscaling_enabled).reject(&.external?)
     @placement_groups = placement_group_manager.create(settings.masters_pool.instance_count, static_worker_node_pools)
@@ -60,6 +63,15 @@ class Cluster::Create
 
     @master_instances = instance_builder.initialize_master_instances(masters_locations)
     @worker_instances = create_worker_instances(static_worker_node_pools)
+  end
+
+  # vSwitch first (its id goes into the subnet), then range extension and subnet. API only.
+  private def ensure_network_layout(network : Hetzner::Network?) : Hetzner::Network?
+    return network if network.nil?
+
+    vswitch_id = Cluster::VSwitchManager.for(settings).try(&.ensure)
+    network_zone = ::Configuration::Validators::NodePoolConfig::Location.network_zone_by_location(masters_locations.first)
+    Hetzner::Network::EnsureLayout.new(settings, hetzner_client, network, network_zone, vswitch_id).run
   end
 
   def run

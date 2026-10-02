@@ -459,18 +459,25 @@ External nodes must:
 
 #### Required cluster settings
 
-External node pools require the following cluster-wide settings:
+External node pools require one of two cluster-wide network layouts:
 
-- `networking.private_network.enabled: false` — external nodes cannot join a Hetzner private network.
-- `networking.public_network.use_local_firewall: true` — the local firewall is deployed to each external node via SSH.
-- `networking.public_network.hetzner_ips_query_server_url` must be set (required by the local firewall to fetch Hetzner node IPs).
+- **Public network** (any provider): `networking.private_network.enabled: false`,
+  `networking.public_network.use_local_firewall: true` and
+  `networking.public_network.hetzner_ips_query_server_url` set (the local firewall polls it for
+  the Hetzner node IPs).
+- **Private network via vSwitch** (`provider: robot` only): keep `networking.private_network.enabled: true`
+  and configure `networking.private_network.vswitch` plus a `private_ip` for every Robot node, see
+  [Robot nodes on the private network](#robot-nodes-on-the-private-network-vswitch) below. The local
+  firewall and the IP query server are not needed in this mode.
 
 #### Validation rules
 
 The following rules are enforced at config validation time:
 
-1. Private network must be disabled.
-2. Local firewall must be enabled.
+1. With the private network enabled, only `provider: robot` pools are allowed, and
+   `networking.private_network.vswitch` must be configured; every Robot node needs a `private_ip`
+   inside the vSwitch subnet (not its gateway, unique across pools).
+2. With the private network disabled, the local firewall must be enabled.
 3. No Hetzner-specific fields allowed in the pool (`image`, `autoscaling`, `grow_root_partition_automatically`, `legacy_instance_type`).
 4. Masters pool cannot use `instance_type: external`.
 5. `instance_count` must equal the number of nodes in `external.nodes`.
@@ -497,6 +504,62 @@ When you run `hetzner-k3s create`, for each external node hetzner-k3s will:
 5. Run pre-k3s commands (`additional_pre_k3s_commands`).
 6. Install k3s worker and join it to the cluster.
 7. Run post-k3s commands (`additional_post_k3s_commands`).
+
+#### Robot nodes on the private network (vSwitch)
+
+Hetzner can bridge a Robot vSwitch into a Cloud Network: the network gets a subnet of type
+`vswitch`, and each dedicated server carries a tagged VLAN interface with an address from that
+subnet (MTU 1400) and a route for the whole network range. hetzner-k3s automates all of it:
+
+```yaml
+networking:
+  private_network:
+    enabled: true
+    ip_range: 10.0.0.0/15        # the network's range; must contain `subnet`
+    subnet: 10.0.0.0/16          # the cloud subnet
+    vswitch:
+      vlan: 4000                 # 4000..4091
+      subnet: 10.1.0.0/24        # inside ip_range, disjoint from subnet, gateway-free
+      name: ""                   # Robot vSwitch name, defaults to the cluster name
+      existing_vswitch_id: null  # reuse a vSwitch you created yourself
+      mtu: 1400                  # VLAN interface MTU, Hetzner's requirement
+
+worker_node_pools:
+- name: robot-workers
+  instance_type: external
+  instance_count: 1
+  external:
+    provider: robot
+    nodes:
+    - host: 203.0.113.30
+      robot_server_number: 123456
+      private_ip: 10.1.0.2           # required; the node's address on the vSwitch subnet
+      vlan_parent_interface: ""      # optional; defaults to the default route's interface
+      ssh_user: root
+      ssh_private_key_path: ~/.ssh/robot_node_key
+      index: 1
+```
+
+On `create`, before any instance is touched, hetzner-k3s finds or creates the vSwitch through
+the Robot webservice, attaches the servers and waits for Robot to report them ready, extends an
+existing network's `ip_range` in place when the configured range is wider (Hetzner networks can
+only grow), and adds the vSwitch subnet. The cloud firewall's node-to-node rules cover the whole
+`ip_range`. On every Robot node it writes the VLAN interface (netplan or ifupdown), checks the
+first master is reachable through it, deploys the local firewall with the network range as a
+static allow list, and installs k3s with `--node-ip=<private_ip>` on the VLAN interface.
+
+Cluster-wide consequences, applied automatically whenever `vswitch` is configured:
+
+- The CCM's route controller is disabled (`HCLOUD_NETWORK_ROUTES_ENABLED=false`): Hetzner does
+  not accept dedicated servers as route gateways. Flannel and Cilium in tunnel mode never used
+  those routes; Cilium `routing_mode: native` is refused.
+- Every node assumes the vSwitch MTU for pod traffic: flannel through `--flannel-conf` (pods at
+  1350 with VXLAN, 1320 with WireGuard), Cilium through its `MTU` value. Pods created before the
+  change keep their old MTU until restarted.
+- Masters must be in the `eu-central` zone, the only one that supports vSwitch coupling.
+
+`hetzner-k3s delete` removes the VLAN interface from the nodes, detaches the servers from the
+vSwitch and deletes the vSwitch if hetzner-k3s created it.
 
 With `provider: generic`, external workers are not initialized by the Hetzner Cloud Controller Manager. hetzner-k3s installs them without kubelet's `cloud-provider=external` argument, and assigns a synthetic `external://<public-ip>` provider ID so the cloud node lifecycle controller will not delete them when they are temporarily NotReady.
 

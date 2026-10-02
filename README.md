@@ -262,6 +262,8 @@ Mix instance types and locations for different workloads. Hetzner offers x86 and
 ### Private Networking
 Cluster communication over Hetzner's private network by default.
 
+- Robot dedicated servers can join a cluster that keeps the Hetzner private network, through a vSwitch (see the docs).
+
 ### CNI Options
 Choose Flannel (simple) or Cilium (advanced networking features).
 

@@ -97,12 +97,14 @@ describe Cluster::VSwitchManager do
     client = FakeRobotClient.new([RVS.new(4321, "test", 4000, [RVSS.new(42, "ready")])])
     Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute).ensure.should eq(4321)
     client.calls.none? { |c| c.starts_with?("create") || c.starts_with?("add") }.should be_true
+    client.calls.none? { |c| c.starts_with?("remove") || c.starts_with?("delete") }.should be_true
+    client.calls.should eq(["list", "get 4321"])
   end
 
   it "uses existing_vswitch_id without listing" do
     client = FakeRobotClient.new([RVS.new(99, "other-name", 4000, [RVSS.new(42, "ready")])])
     Cluster::VSwitchManager.new(manager_settings("      existing_vswitch_id: 99"), client, 0.seconds, 1.minute).ensure.should eq(99)
-    client.calls.should_not contain("list")
+    client.calls.should eq(["get 99"])
   end
 
   it "refuses a vlan mismatch" do

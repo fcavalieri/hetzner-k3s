@@ -30,8 +30,9 @@ class Cluster::VSwitchManager
 
     config = settings.networking.private_network.vswitch.not_nil!
     vswitch = find_or_create(config)
-    attach_missing(vswitch)
-    wait_until_ready(vswitch.id)
+    attached = attach_missing(vswitch)
+    # Nothing attached: the detail fetched by find_or_create is current, so a clean re-run needs no extra read.
+    wait_until_ready(vswitch.id) unless !attached && all_ready?(vswitch.servers)
     log_line "vSwitch #{vswitch.name} (#{vswitch.id}) ready with Robot server(s) #{wanted_server_numbers.join(", ")}"
     vswitch.id
   end
@@ -83,17 +84,24 @@ class Cluster::VSwitchManager
     robot_client.create_vswitch(name, config.vlan)
   end
 
-  private def attach_missing(vswitch) : Nil
+  private def all_ready?(servers) : Bool
+    wanted = wanted_server_numbers
+    relevant = servers.select { |server| wanted.includes?(server.number) }
+    relevant.size == wanted.size && relevant.all? { |server| server.status == "ready" }
+  end
+
+  private def attach_missing(vswitch) : Bool
     missing = wanted_server_numbers - vswitch.server_numbers
-    return if missing.empty?
+    return false if missing.empty?
 
     log_line "Attaching Robot server(s) #{missing.join(", ")} to vSwitch #{vswitch.id}..."
     robot_client.add_vswitch_servers(vswitch.id, missing)
+    true
   end
 
   private def wait_until_ready(id : Int32) : Nil
     wanted = wanted_server_numbers
-    deadline = Time.monotonic + ready_timeout
+    deadline = Time.instant + ready_timeout
 
     loop do
       servers = robot_client.vswitch(id).servers.select { |server| wanted.includes?(server.number) }
@@ -103,7 +111,7 @@ class Cluster::VSwitchManager
       return if servers.size == wanted.size && servers.all? { |server| server.status == "ready" }
 
       pending = wanted - servers.select { |server| server.status == "ready" }.map(&.number)
-      raise "Timed out after #{ready_timeout.total_minutes.to_i} minutes waiting for vSwitch #{id} to be ready on server(s) #{pending.join(", ")}" if Time.monotonic > deadline
+      raise "Timed out after #{ready_timeout.total_minutes.to_i} minutes waiting for vSwitch #{id} to be ready on server(s) #{pending.join(", ")}" if Time.instant > deadline
 
       log_line "Waiting for vSwitch #{id} to be ready on server(s) #{pending.join(", ")}..."
       sleep poll_interval

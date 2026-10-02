@@ -66,8 +66,9 @@ class Cluster::Create
   end
 
   # vSwitch first (its id goes into the subnet), then range extension and subnet. API only.
+  # Without ip_range and vswitch the network is returned untouched: no Robot or layout call.
   private def ensure_network_layout(network : Hetzner::Network?) : Hetzner::Network?
-    return network if network.nil?
+    return network if network.nil? || !Hetzner::Network::EnsureLayout.needed?(settings)
 
     vswitch_id = Cluster::VSwitchManager.for(settings).try(&.ensure)
     network_zone = ::Configuration::Validators::NodePoolConfig::Location.network_zone_by_location(masters_locations.first)

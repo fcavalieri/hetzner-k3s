@@ -26,4 +26,14 @@ describe Kubernetes::Script::FlannelConf do
     Kubernetes::NetworkMTU.for(mtu_settings("cilium", true, true)).should eq(1400)
     Kubernetes::NetworkMTU.for(mtu_settings("flannel", false, false)).should be_nil
   end
+
+  it "assumes no MTU when the private network is disabled" do
+    settings = Configuration::Main.from_yaml(mtu_settings_yaml_disabled)
+    Kubernetes::NetworkMTU.for(settings).should be_nil
+    Kubernetes::Script::FlannelConf.render(settings).should eq("")
+  end
+end
+
+def mtu_settings_yaml_disabled : String
+  "hetzner_token: x\ncluster_name: test\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\nnetworking:\n  private_network:\n    enabled: false\n    ip_range: 10.0.0.0/15\n    subnet: 10.0.0.0/16\n    vswitch:\n      vlan: 4000\n      subnet: 10.1.0.0/24\n"
 end

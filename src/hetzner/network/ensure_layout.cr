@@ -7,7 +7,9 @@ require "../../util"
 require "../../configuration/main"
 
 # Brings an existing private network to the configured layout: a wider ip_range (extend only)
-# and the vSwitch subnet. Never removes or replaces anything; conflicts raise.
+# and the vSwitch subnet. Never removes or replaces anything; conflicts raise. Each step runs
+# only when its key is set explicitly, so a configuration without the new keys never touches
+# the network (an existing network may well be wider than `subnet`).
 class Hetzner::Network::EnsureLayout
   include Util
 
@@ -23,6 +25,12 @@ class Hetzner::Network::EnsureLayout
   def initialize(@settings, @hetzner_client, @network, @network_zone, @vswitch_id)
   end
 
+  # True when the configuration asks for a layout change: an explicit ip_range or a vswitch.
+  def self.needed?(settings : Configuration::Main) : Bool
+    private_network = settings.networking.private_network
+    !private_network.ip_range.nil? || !private_network.vswitch.nil?
+  end
+
   def run : Hetzner::Network
     extend_ip_range_if_needed
     add_vswitch_subnet_if_needed
@@ -30,9 +38,9 @@ class Hetzner::Network::EnsureLayout
   end
 
   private def extend_ip_range_if_needed
-    desired = settings.networking.private_network.effective_ip_range
+    desired = settings.networking.private_network.ip_range
     current = network.ip_range
-    return if current.empty? || current == desired
+    return if desired.nil? || current.empty? || current == desired
 
     unless contains?(desired, current)
       raise "Private network #{network.name} has ip_range #{current}, which the configured ip_range #{desired} does not contain; Hetzner networks can only be extended, never shrunk or moved"

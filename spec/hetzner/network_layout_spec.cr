@@ -32,11 +32,14 @@ class FakeHetznerClient < Hetzner::Client
   end
 end
 
-def layout_settings(ip_range = "10.0.0.0/15", vswitch = true) : Configuration::Main
+# ip_range nil leaves the key out (a configuration without the new keys).
+def layout_settings(ip_range : String? = "10.0.0.0/15", vswitch = true) : Configuration::Main
   vs = vswitch ? "    vswitch:\n      vlan: 4000\n      subnet: 10.1.0.0/24\n" : ""
-  Configuration::Main.from_yaml("hetzner_token: x\ncluster_name: test\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\nnetworking:\n  private_network:\n    ip_range: #{ip_range}\n    subnet: 10.0.0.0/16\n#{vs}")
+  range = ip_range ? "    ip_range: #{ip_range}\n" : ""
+  Configuration::Main.from_yaml("hetzner_token: x\ncluster_name: test\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\nnetworking:\n  private_network:\n#{range}    subnet: 10.0.0.0/16\n#{vs}")
 end
 
+LIVE_8 = %({"id":1,"name":"test","ip_range":"10.0.0.0/8","subnets":[{"type":"cloud","ip_range":"10.0.0.0/16","network_zone":"eu-central","gateway":"10.0.0.1"}],"servers":[]})
 LIVE_16 = %({"id":1,"name":"test","ip_range":"10.0.0.0/16","subnets":[{"type":"cloud","ip_range":"10.0.0.0/16","network_zone":"eu-central","gateway":"10.0.0.1"}],"servers":[]})
 
 def network_of(client) : Hetzner::Network
@@ -52,6 +55,19 @@ describe Hetzner::Network::Create do
 end
 
 describe Hetzner::Network::EnsureLayout do
+  it "is not needed without the new keys" do
+    Hetzner::Network::EnsureLayout.needed?(layout_settings(nil, vswitch: false)).should be_false
+    Hetzner::Network::EnsureLayout.needed?(layout_settings(vswitch: false)).should be_true
+    Hetzner::Network::EnsureLayout.needed?(layout_settings(nil)).should be_true
+  end
+
+  it "leaves an existing wider network untouched without the new keys" do
+    client = FakeHetznerClient.new(LIVE_8)
+    network = Hetzner::Network::EnsureLayout.new(layout_settings(nil, vswitch: false), client, network_of(client), "eu-central", nil).run
+    client.calls.none?(&.starts_with?("POST")).should be_true
+    network.ip_range.should eq("10.0.0.0/8")
+  end
+
   it "does nothing when the layout already matches" do
     client = FakeHetznerClient.new(LIVE_16.sub("10.0.0.0/16\",\"subnets", "10.0.0.0/15\",\"subnets").sub(%("subnets":[), %("subnets":[{"type":"vswitch","ip_range":"10.1.0.0/24","network_zone":"eu-central","gateway":"10.1.0.1","vswitch_id":4321},)))
     Hetzner::Network::EnsureLayout.new(layout_settings, client, network_of(client), "eu-central", 4321).run
@@ -85,5 +101,14 @@ describe Hetzner::Network::EnsureLayout do
     expect_raises(Exception, /already has a vSwitch subnet/) do
       Hetzner::Network::EnsureLayout.new(layout_settings, client, network_of(client), "eu-central", 4321).run
     end
+    client.calls.none?(&.starts_with?("POST")).should be_true
+  end
+
+  it "refuses an existing vswitch subnet with the same id but another range" do
+    client = FakeHetznerClient.new(LIVE_16.sub("10.0.0.0/16\",\"subnets", "10.0.0.0/15\",\"subnets").sub(%("subnets":[), %("subnets":[{"type":"vswitch","ip_range":"10.1.1.0/24","network_zone":"eu-central","gateway":"10.1.1.1","vswitch_id":4321},)))
+    expect_raises(Exception, /already has a vSwitch subnet 10.1.1.0\/24 \(vSwitch 4321\) but the configuration says 10.1.0.0\/24/) do
+      Hetzner::Network::EnsureLayout.new(layout_settings, client, network_of(client), "eu-central", 4321).run
+    end
+    client.calls.none?(&.starts_with?("POST")).should be_true
   end
 end

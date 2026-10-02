@@ -2,6 +2,7 @@ require "../spec_helper"
 require "../../src/configuration/main"
 require "../../src/hetzner/network/create"
 require "../../src/hetzner/network/ensure_layout"
+require "../../src/hetzner/network/delete_subnet"
 
 # In-memory Hetzner API: one network, mutated by the actions it receives.
 class FakeHetznerClient < Hetzner::Client
@@ -27,6 +28,8 @@ class FakeHetznerClient < Hetzner::Client
       self.network_json = network_json.not_nil!.sub(/"ip_range":"[^"]+"/, %("ip_range":"#{body["ip_range"].as_s}"))
     when "/networks/1/actions/add_subnet"
       self.network_json = network_json.not_nil!.sub(%("subnets":[), %("subnets":[{"type":"vswitch","ip_range":"#{body["ip_range"].as_s}","network_zone":"eu-central","gateway":"10.1.0.1","vswitch_id":#{body["vswitch_id"].as_i}},))
+    when "/networks/1/actions/delete_subnet"
+      self.network_json = network_json.not_nil!.sub(/\{"type":"[a-z]+","ip_range":"#{Regex.escape(body["ip_range"].as_s)}"[^}]*\},?/, "")
     end
     {true, %({"action":{"id":1,"status":"success"}})}
   end
@@ -109,6 +112,27 @@ describe Hetzner::Network::EnsureLayout do
     expect_raises(Exception, /already has a vSwitch subnet 10.1.1.0\/24 \(vSwitch 4321\) but the configuration says 10.1.0.0\/24/) do
       Hetzner::Network::EnsureLayout.new(layout_settings, client, network_of(client), "eu-central", 4321).run
     end
+    client.calls.none?(&.starts_with?("POST")).should be_true
+  end
+end
+
+LIVE_WITH_VSWITCH = LIVE_16.sub("10.0.0.0/16\",\"subnets", "10.0.0.0/15\",\"subnets").sub(%("subnets":[), %("subnets":[{"type":"vswitch","ip_range":"10.1.0.0/24","network_zone":"eu-central","gateway":"10.1.0.1","vswitch_id":4321},))
+
+describe Hetzner::Network::DeleteSubnet do
+  it "removes the vSwitch subnet from a network that survives delete" do
+    client = FakeHetznerClient.new(LIVE_WITH_VSWITCH)
+    Hetzner::Network::DeleteSubnet.new(client, network_of(client), "10.1.0.0/24").run.should be_true
+    client.calls.should contain(%(POST /networks/1/actions/delete_subnet {"ip_range":"10.1.0.0/24"}))
+    remaining = network_of(client)
+    remaining.vswitch_subnet.should be_nil
+    remaining.cloud_subnet.not_nil!.ip_range.should eq("10.0.0.0/16")
+  end
+
+  it "leaves a network without a vSwitch subnet of that range alone" do
+    client = FakeHetznerClient.new(LIVE_16)
+    Hetzner::Network::DeleteSubnet.new(client, network_of(client), "10.1.0.0/24").run.should be_false
+    client = FakeHetznerClient.new(LIVE_WITH_VSWITCH)
+    Hetzner::Network::DeleteSubnet.new(client, network_of(client), "10.1.1.0/24").run.should be_false
     client.calls.none?(&.starts_with?("POST")).should be_true
   end
 end

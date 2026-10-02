@@ -16,14 +16,15 @@ class FakeRobotClient < Hetzner::Robot::Client
 
   def vswitches : Array(RVS)
     calls << "list"
-    data.map { |v| RVS.new(v.id, v.name, v.vlan, [] of RVSS) }
+    data.map { |v| RVS.new(v.id, v.name, v.vlan, [] of RVSS, v.cancelled) }
   end
 
+  # Unknown ids fail the way Robot does: HTTP 404 with code NOT_FOUND in the body.
   def vswitch(id : Int32) : RVS
     calls << "get #{id}"
-    found = data.find { |v| v.id == id } || raise Hetzner::Robot::Client::Error.new("vSwitch #{id} not found")
+    found = data.find { |v| v.id == id } || raise Hetzner::Robot::Client::Error.new(%(Failed to fetch Robot vSwitch #{id}: {"error":{"status":404,"code":"NOT_FOUND","message":"vSwitch not found"}}))
     status = statuses.size > 1 ? statuses.shift : statuses.first
-    RVS.new(found.id, found.name, found.vlan, found.servers.map { |s| RVSS.new(s.number, status) })
+    RVS.new(found.id, found.name, found.vlan, found.servers.map { |s| RVSS.new(s.number, status) }, found.cancelled)
   end
 
   def create_vswitch(name : String, vlan : Int32) : RVS
@@ -140,5 +141,46 @@ describe Cluster::VSwitchManager do
     Cluster::VSwitchManager.new(manager_settings("      existing_vswitch_id: 99"), foreign, 0.seconds, 1.minute).cleanup
     foreign.calls.should contain("remove 99 42")
     foreign.calls.should_not contain("delete 99")
+  end
+
+  it "cleanup detaches but keeps a vswitch with an explicit name" do
+    client = FakeRobotClient.new([RVS.new(4321, "shared", 4000, [RVSS.new(42, "ready")])])
+    Cluster::VSwitchManager.new(manager_settings("      name: shared"), client, 0.seconds, 1.minute).cleanup
+    client.calls.should contain("remove 4321 42")
+    client.calls.none?(&.starts_with?("delete")).should be_true
+  end
+
+  it "cleanup keeps an owned vswitch that still carries another server" do
+    client = FakeRobotClient.new([RVS.new(4321, "test", 4000, [RVSS.new(42, "ready"), RVSS.new(77, "ready")])])
+    Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute).cleanup
+    client.calls.should contain("remove 4321 42")
+    client.calls.none?(&.starts_with?("delete")).should be_true
+  end
+
+  it "cleanup treats a vswitch Robot no longer knows as already gone" do
+    client = FakeRobotClient.new
+    Cluster::VSwitchManager.new(manager_settings("      existing_vswitch_id: 99"), client, 0.seconds, 1.minute).cleanup
+    client.calls.should eq(["get 99"])
+  end
+
+  it "cleanup still raises other Robot errors" do
+    client = FailingRobotClient.new([RVS.new(99, "theirs", 4000, [RVSS.new(42, "ready")])])
+    expect_raises(Hetzner::Robot::Client::Error, /UNAUTHORIZED/) do
+      Cluster::VSwitchManager.new(manager_settings("      existing_vswitch_id: 99"), client, 0.seconds, 1.minute).cleanup
+    end
+  end
+
+  it "ignores cancelled vswitches when looking up by name and scanning membership" do
+    client = FakeRobotClient.new([RVS.new(1111, "test", 4000, [RVSS.new(42, "ready")], true)])
+    Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute).ensure.should eq(4321)
+    client.calls[0, 3].should eq(["list", "create test 4000", "add 4321 42"])
+    client.calls.should_not contain("get 1111")
+  end
+end
+
+class FailingRobotClient < FakeRobotClient
+  def vswitch(id : Int32) : RVS
+    calls << "get #{id}"
+    raise Hetzner::Robot::Client::Error.new(%(Failed to fetch Robot vSwitch #{id}: {"error":{"status":401,"code":"UNAUTHORIZED","message":"Unauthorized"}}))
   end
 end

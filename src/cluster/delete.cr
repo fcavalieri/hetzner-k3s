@@ -2,6 +2,8 @@ require "../configuration/loader"
 require "../hetzner/ssh_key/delete"
 require "../hetzner/firewall/delete"
 require "../hetzner/network/delete"
+require "../hetzner/network/delete_subnet"
+require "../hetzner/network/find"
 require "../hetzner/instance/delete"
 require "../hetzner/load_balancer/delete"
 require "../hetzner/placement_group/delete"
@@ -70,9 +72,11 @@ class Cluster::Delete
     delete_instances
     delete_placement_groups
     delete_network if settings.networking.private_network.enabled
-    cleanup_vswitch if settings.robot_private_network?
     delete_firewall if settings.networking.private_network.enabled || !settings.networking.public_network.use_local_firewall
     delete_ssh_key
+    # The vSwitch coupling goes last, so a refused Robot call never leaves cloud resources behind.
+    remove_vswitch_subnet if vswitch_subnet_on_surviving_network?
+    cleanup_vswitch if settings.robot_private_network?
   end
 
   private def cleanup_external_nodes
@@ -230,8 +234,27 @@ class Cluster::Delete
     ).run
   end
 
-  # The network deletion above removed the vSwitch subnet (the cloud side of the coupling);
-  # now detach this cluster's servers and drop the vSwitch if hetzner-k3s created it.
+  # An existing network (existing_network_name) survives `delete`, so the vSwitch subnet create
+  # added to it is removed explicitly. A network hetzner-k3s created is already gone with it.
+  # create adds the subnet only when a Robot pool uses the private network.
+  private def vswitch_subnet_on_surviving_network? : Bool
+    private_network = settings.networking.private_network
+    settings.robot_private_network? && !private_network.existing_network_name.empty? && !private_network.vswitch.nil?
+  end
+
+  private def remove_vswitch_subnet
+    private_network = settings.networking.private_network
+    network = Hetzner::Network::Find.new(hetzner_client, private_network.existing_network_name).run
+    return if network.nil?
+
+    Hetzner::Network::DeleteSubnet.new(hetzner_client, network, private_network.vswitch.not_nil!.subnet).run
+  rescue ex
+    log_line "#{force ? "Warning" : "Error"}: removing the vSwitch subnet failed: #{ex.message}"
+    exit 1 unless force
+  end
+
+  # The cloud side of the coupling is gone by now (with the network, or removed above); detach
+  # this cluster's servers and drop the vSwitch if hetzner-k3s created it.
   private def cleanup_vswitch
     manager = Cluster::VSwitchManager.for(settings)
     return unless manager

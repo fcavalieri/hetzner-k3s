@@ -43,6 +43,20 @@ describe Hetzner::Robot::Client do
     list.size.should eq(1)
     list.first.name.should eq("test")
     list.first.servers.should be_empty
+    list.first.cancelled.should be_false
+  end
+
+  it "reads the cancelled flag" do
+    client = RecordingRobotClient.new
+    client.responses["GET /vswitch"] = {true, %([{"id":4321,"name":"test","vlan":4000,"cancelled":true}])}
+    client.vswitches.first.cancelled.should be_true
+  end
+
+  it "deletes a vswitch with an immediate cancellation date" do
+    client = RecordingRobotClient.new
+    client.responses["DELETE /vswitch/4321"] = {true, ""}
+    client.delete_vswitch(4321)
+    client.calls.should eq(["DELETE /vswitch/4321 cancellation_date=now"])
   end
 
   it "reads one vswitch with its servers" do

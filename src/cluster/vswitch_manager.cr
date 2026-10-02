@@ -40,24 +40,50 @@ class Cluster::VSwitchManager
     vswitch.id
   end
 
-  # Detaches the cluster's Robot servers; deletes the vSwitch only when hetzner-k3s created it.
+  # Detaches the cluster's Robot servers. Deletes the vSwitch only when hetzner-k3s created it
+  # (spec §5.8: no existing_vswitch_id and no explicit name, so it carries the generated name)
+  # and no other server is left on it. A vSwitch Robot no longer knows counts as cleaned up.
   def cleanup : Nil
     return unless settings.robot_private_network?
 
     config = settings.networking.private_network.vswitch.not_nil!
-    vswitch = find(config)
+    vswitch = find_for_cleanup(config)
     return if vswitch.nil?
 
-    attached = vswitch.server_numbers & wanted_server_numbers
+    wanted = wanted_server_numbers
+    attached = vswitch.server_numbers & wanted
     unless attached.empty?
       log_line "Detaching Robot server(s) #{attached.join(", ")} from vSwitch #{vswitch.id}..."
       robot_client.remove_vswitch_servers(vswitch.id, attached)
     end
 
-    return if config.existing_vswitch_id
+    unless owned?(config)
+      log_line "Keeping vSwitch #{vswitch.name} (#{vswitch.id}): it was not created by hetzner-k3s"
+      return
+    end
+
+    others = vswitch.server_numbers - wanted
+    unless others.empty?
+      log_line "Keeping vSwitch #{vswitch.name} (#{vswitch.id}): other server(s) #{others.join(", ")} are still attached"
+      return
+    end
 
     log_line "Deleting vSwitch #{vswitch.name} (#{vswitch.id})..."
     robot_client.delete_vswitch(vswitch.id)
+  end
+
+  private def owned?(config) : Bool
+    config.existing_vswitch_id.nil? && config.name.blank?
+  end
+
+  private def find_for_cleanup(config) : Hetzner::Robot::Client::VSwitch?
+    find(config)
+  rescue ex : Hetzner::Robot::Client::Error
+    message = ex.message.to_s
+    raise ex unless message.includes?("404") || message.includes?("NOT_FOUND")
+
+    log_line "vSwitch #{config.existing_vswitch_id || config.name_for(settings.cluster_name)} no longer exists in Robot, nothing to detach"
+    nil
   end
 
   private def wanted_server_numbers : Array(Int32)
@@ -76,7 +102,7 @@ class Cluster::VSwitchManager
 
     name = config.name_for(settings.cluster_name)
     listing = robot_client.vswitches
-    listed = listing.find { |candidate| candidate.name == name }
+    listed = listing.find { |candidate| candidate.name == name && !candidate.cancelled }
     {listed ? robot_client.vswitch(listed.id) : nil, listing}
   end
 
@@ -92,10 +118,10 @@ class Cluster::VSwitchManager
     robot_client.create_vswitch(name, config.vlan)
   end
 
-  # A Robot server can sit on several vSwitches, but only one of them may carry this
-  # cluster's VLAN. When servers still have to be attached, refuse if one of them is already
-  # on another vSwitch, instead of silently attaching it to a second one. Costs no Robot call
-  # on a re-run where every wanted server is already on our vSwitch.
+  # Spec §4: a Robot server that is already a member of any other vSwitch is refused, whatever
+  # that vSwitch's VLAN, instead of being attached to a second one. Cancelled vSwitches do not
+  # count. Runs only when servers still have to be attached, so a re-run where every wanted
+  # server is already on our vSwitch costs no Robot call.
   private def refuse_foreign_membership(config, ours, listing) : Nil
     missing = wanted_server_numbers - (ours ? ours.server_numbers : [] of Int32)
     return if missing.empty?
@@ -104,6 +130,7 @@ class Cluster::VSwitchManager
     listing ||= robot_client.vswitches
 
     listing.each do |candidate|
+      next if candidate.cancelled
       next if ours ? candidate.id == ours.id : (config.existing_vswitch_id.nil? && candidate.name == our_name)
       attached = robot_client.vswitch(candidate.id).server_numbers & missing
       next if attached.empty?

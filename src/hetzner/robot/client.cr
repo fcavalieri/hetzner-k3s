@@ -29,8 +29,10 @@ class Hetzner::Robot::Client
     getter name : String
     getter vlan : Int32
     getter servers : Array(VSwitchServer)
+    # A cancelled vSwitch stays listed until Robot removes it; it is no longer usable.
+    getter cancelled : Bool
 
-    def initialize(@id, @name, @vlan, @servers)
+    def initialize(@id, @name, @vlan, @servers, @cancelled = false)
     end
 
     def server_numbers : Array(Int32)
@@ -103,8 +105,9 @@ class Hetzner::Robot::Client
     raise Error.new("Failed to remove server(s) #{server_numbers.join(", ")} from Robot vSwitch #{id}: #{response.strip}") unless success
   end
 
+  # Robot cancels a vSwitch rather than deleting it and requires the cancellation date.
   def delete_vswitch(id : Int32) : Nil
-    success, response = delete_form("/vswitch/#{id}", "")
+    success, response = delete_form("/vswitch/#{id}", "cancellation_date=now")
     raise Error.new("Failed to delete Robot vSwitch #{id}: #{response.strip}") unless success
   end
 
@@ -176,7 +179,7 @@ class Hetzner::Robot::Client
     servers = (object["server"]?.try(&.as_a) || [] of JSON::Any).map do |server|
       VSwitchServer.new(server["server_number"].as_i, server["status"]?.try(&.as_s) || "ready")
     end
-    VSwitch.new(object["id"].as_i, object["name"].as_s, object["vlan"].as_i, servers)
+    VSwitch.new(object["id"].as_i, object["name"].as_s, object["vlan"].as_i, servers, object["cancelled"]?.try(&.as_bool?) || false)
   end
 
   private def headers

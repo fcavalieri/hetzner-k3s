@@ -146,9 +146,11 @@ class Kubernetes::LocalFirewall::Setup
     ssh.run(instance, port, script, use_ssh_agent)
   end
 
+  # Static mode never polls the IP query server, so the script carries no Hetzner token: the
+  # external node it lands on is not a Hetzner Cloud server and has no business holding it.
   private def render_firewall_script(ssh_port : Int32 = settings.networking.ssh.port, static_node_networks : String = "") : String
     Crinja.render(FIREWALL_SCRIPT, {
-      hetzner_token:                settings.hetzner_token,
+      hetzner_token:                static_node_networks.empty? ? settings.hetzner_token : "",
       hetzner_ips_query_server_url: settings.networking.public_network.hetzner_ips_query_server_url || "",
       static_node_networks:         static_node_networks,
       ssh_port:                     ssh_port,

@@ -9,8 +9,10 @@ class RenderableFirewall < Kubernetes::LocalFirewall::Setup
   end
 end
 
+FIREWALL_SPEC_TOKEN = "hk3s-firewall-spec-token"
+
 def firewall_settings(yaml_networking : String) : Configuration::Main
-  Configuration::Main.from_yaml("hetzner_token: x\ncluster_name: test\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\n" + yaml_networking)
+  Configuration::Main.from_yaml("hetzner_token: #{FIREWALL_SPEC_TOKEN}\ncluster_name: test\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\n" + yaml_networking)
 end
 
 # Runs only fetch_node_ips() out of the rendered script, with its readonly inputs.
@@ -27,6 +29,8 @@ describe Kubernetes::LocalFirewall::Setup do
     script = RenderableFirewall.new(settings, Util::SSH.new("/tmp/key")).render(22, "10.0.0.0/15")
     script.should contain(%(STATIC_NODE_NETWORKS="10.0.0.0/15"))
     script.should contain(%(HETZNER_IPS_URL="/ips"))
+    script.should contain(%(HETZNER_TOKEN=""))
+    script.should_not contain(FIREWALL_SPEC_TOKEN)
     run_fetch_node_ips(script, "10.0.0.0/15,10.1.0.0/24").should eq("10.0.0.0/15\n10.1.0.0/24\n")
   end
 
@@ -35,6 +39,7 @@ describe Kubernetes::LocalFirewall::Setup do
     script = RenderableFirewall.new(settings, Util::SSH.new("/tmp/key")).render(22, "")
     script.should contain(%(HETZNER_IPS_URL="https://ip-query.example.com/ips"))
     script.should contain(%(STATIC_NODE_NETWORKS=""))
+    script.should contain(%(HETZNER_TOKEN="#{FIREWALL_SPEC_TOKEN}"))
     run_fetch_node_ips(script, "").should eq("")   # unreachable server, no cache: empty, exit 1
   end
 end

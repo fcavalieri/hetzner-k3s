@@ -1,6 +1,7 @@
 require "admiral"
 require "colorize"
 
+require "./version"
 require "./configuration/loader"
 require "./k3s"
 require "./cluster/create"
@@ -10,7 +11,7 @@ require "./cluster/run"
 
 module Hetzner::K3s
   class CLI < Admiral::Command
-    VERSION = "2.6.0"
+    VERSION = Hetzner::K3s::VERSION
     CONFIG_FORMAT_VERSION = "1"
 
     def self.print_banner

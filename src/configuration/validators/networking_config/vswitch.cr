@@ -70,7 +70,8 @@ class Configuration::Validators::NetworkingConfig::VSwitch
   end
 
   private def parse(cidr : String) : IPAddress::IPv4?
-    IPAddress.new(cidr).as(IPAddress::IPv4)
+    ip = IPAddress.new(cidr)
+    ip.is_a?(IPAddress::IPv4) ? ip : nil
   rescue ArgumentError
     nil
   end

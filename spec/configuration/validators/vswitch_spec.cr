@@ -98,4 +98,12 @@ describe Configuration::Validators::NetworkingConfig::VSwitch do
     errors = vswitch_errors(GOOD + "\n" + "  cni:\n    mode: cilium\n    cilium:\n      routing_mode: native\n", pools: ROBOT_POOL)
     errors.any?(&.includes?("native routing")).should be_true
   end
+
+  it "reports IPv6 networks as invalid instead of raising" do
+    errors = vswitch_errors(GOOD.sub("ip_range: 10.0.0.0/15", "ip_range: fd00::/64"))
+    errors.any?(&.includes?("not a valid network")).should be_true
+
+    errors = vswitch_errors(GOOD.sub("subnet: 10.1.0.0/24", "subnet: fd00::/64"))
+    errors.any?(&.includes?("vswitch.subnet fd00::/64 is not a valid network")).should be_true
+  end
 end

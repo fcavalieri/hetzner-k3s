@@ -1,4 +1,5 @@
 # Managed by hetzner-k3s: VLAN interface for the Hetzner vSwitch (do not edit by hand)
+# The vlan hook takes the VLAN id from the vlanNNNN name and the parent from vlan-raw-device.
 auto {{ vlan_interface }}
 iface {{ vlan_interface }} inet static
   address {{ private_ip }}

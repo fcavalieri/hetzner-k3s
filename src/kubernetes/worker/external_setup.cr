@@ -182,8 +182,8 @@ class Kubernetes::Worker::ExternalSetup
   end
 
   # Writes and brings up the vSwitch VLAN interface, then proves the master is reachable
-  # through it. Idempotent: the file is rewritten and re-applied on every run. Returns the
-  # VLAN interface name for the k3s flags.
+  # through it. Idempotent: the file is reconciled on every run and applied only when it
+  # changed or the address is missing. Returns the VLAN interface name for the k3s flags.
   private def configure_vlan(node, ssh, instance, use_sudo, first_master) : String
     vlan_setup = Kubernetes::Worker::VlanSetup.new(settings, node)
 
@@ -191,31 +191,55 @@ class Kubernetes::Worker::ExternalSetup
     raise "Cannot determine the public network interface of external node #{node.host} (no default route); set vlan_parent_interface" if parent.empty?
 
     mechanism = capture_ssh(ssh, instance, node.ssh_port, sudo_command(Kubernetes::Worker::VlanSetup::DETECT_MECHANISM_COMMAND, use_sudo))
-    interface = vlan_setup.interface_name(parent)
-    log_line "Configuring vSwitch VLAN interface #{interface} (#{mechanism}) with #{node.private_ip}...", node.host
+    interface = vlan_setup.interface_name
+    log_line "Configuring vSwitch VLAN interface #{interface} on #{parent} (#{mechanism}) with #{node.private_ip}...", node.host
+    apply_vlan(vlan_setup, mechanism, parent, node, ssh, instance, use_sudo)
+    check_master_reachable(vlan_setup, node, ssh, instance, use_sudo, first_master)
+    interface
+  end
+
+  private def apply_vlan(vlan_setup, mechanism, parent, node, ssh, instance, use_sudo) : Nil
+    interface = vlan_setup.interface_name
     begin
-      run_ssh(ssh, instance, node.ssh_port, sudo_command(vlan_setup.apply_command(mechanism, parent), use_sudo))
+      output = capture_ssh(ssh, instance, node.ssh_port, sudo_command(vlan_setup.apply_command(mechanism, parent), use_sudo))
+      log_line "...#{interface} already configured with #{node.private_ip}, left as is", node.host if output.lines.last?.try(&.strip) == "unchanged"
     rescue ex
-      # `netplan apply` can drop the SSH session on some images even though the configuration landed.
+      # `netplan apply` can drop the SSH session (ssh exits 255) on some images even though the
+      # configuration landed: pin the MTU and verify the address over a new session. Any other
+      # failure is the script's own and is raised as is.
+      raise ex unless Kubernetes::Worker::VlanSetup.session_dropped?(ex.message.to_s)
+
       sleep 5.seconds
       begin
-        run_ssh(ssh, instance, node.ssh_port, sudo_command("ip -4 -o addr show dev #{interface} | grep -q ' #{node.private_ip}/'", use_sudo))
-        log_line "...applying the VLAN configuration dropped the SSH session, but #{interface} has #{node.private_ip}; continuing", node.host
+        capture_ssh(ssh, instance, node.ssh_port, sudo_command(vlan_setup.recovery_command, use_sudo))
       rescue
         raise ex
       end
+      log_line "...applying the VLAN configuration dropped the SSH session, but #{interface} has #{node.private_ip}; continuing", node.host
+    end
+  end
+
+  # Retried every 10 s for up to 120 s: the vSwitch can take a while to forward traffic.
+  private def check_master_reachable(vlan_setup, node, ssh, instance, use_sudo, first_master) : Nil
+    interface = vlan_setup.interface_name
+    master_ip = api_server_ip_address(first_master)
+    attempts = Kubernetes::Worker::VlanSetup::REACHABILITY_ATTEMPTS
+    interval = Kubernetes::Worker::VlanSetup::REACHABILITY_INTERVAL
+    on_retry = ->(attempt : Int32) do
+      log_line "Master #{master_ip} not reachable through the vSwitch yet (attempt #{attempt}/#{attempts}), retrying in #{interval.total_seconds.to_i} s...", node.host
+      nil
     end
 
-    master_ip = api_server_ip_address(first_master)
     begin
-      run_ssh(ssh, instance, node.ssh_port, sudo_command(vlan_setup.reachability_command(master_ip), use_sudo))
+      Kubernetes::Worker::VlanSetup.with_retries(attempts, interval, on_retry) do
+        capture_ssh(ssh, instance, node.ssh_port, sudo_command(vlan_setup.reachability_command(master_ip), use_sudo))
+      end
     rescue ex
       vswitch = settings.networking.private_network.vswitch.not_nil!
       raise "External node #{node.host} cannot reach the first master at #{master_ip} through the vSwitch (VLAN #{vswitch.vlan}, interface #{interface}, route #{settings.networking.private_network.effective_ip_range} via #{vswitch.gateway}). The vSwitch can take a few minutes to come up on Hetzner's side; check its status in Robot and the vSwitch subnet in the Cloud Console, then re-run. (#{ex.message})"
     end
 
     log_line "...vSwitch VLAN interface #{interface} up, master #{master_ip} reachable", node.host
-    interface
   end
 
   private def capture_ssh(ssh, instance, port, script) : String

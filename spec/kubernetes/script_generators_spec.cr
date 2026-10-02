@@ -52,8 +52,8 @@ describe "install scripts" do
     loader = loader_for(robot_yaml)
     settings = loader.settings
     pool = settings.worker_node_pools.last
-    script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, pool, pool.external.not_nil!.nodes.first, "enp0s31f6.4000")
-    script.should contain(%(NETWORK_INTERFACE="enp0s31f6.4000"))
+    script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, pool, pool.external.not_nil!.nodes.first, "vlan4000")
+    script.should contain(%(NETWORK_INTERFACE="vlan4000"))
     script.should contain(%(PRIVATE_IP="10.1.0.2"))
     script.should contain("K3S_URL=https://10.0.0.2:6443")
     script.should contain("--flannel-iface=$NETWORK_INTERFACE")

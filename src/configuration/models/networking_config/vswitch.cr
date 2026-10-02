@@ -31,9 +31,22 @@ class Configuration::Models::NetworkingConfig::VSwitch
     network.netmask
   end
 
+  def network_address : String
+    network.network.address
+  end
+
+  def broadcast_address : String
+    network.broadcast.address
+  end
+
+  # Called with user input (a node's private_ip): IPv6 or garbage, on either side, is "no".
   def contains?(ip : String) : Bool
-    value = IPAddress.new(ip).as(IPAddress::IPv4).to_u32
-    value >= network.network_u32 && value <= network.broadcast_u32
+    address = IPAddress.new(ip)
+    range = IPAddress.new(subnet)
+    return false unless address.is_a?(IPAddress::IPv4) && range.is_a?(IPAddress::IPv4)
+
+    value = address.to_u32
+    value >= range.network_u32 && value <= range.broadcast_u32
   rescue ArgumentError
     false
   end

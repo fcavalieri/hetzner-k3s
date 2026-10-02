@@ -24,8 +24,9 @@ networking:
       subnet: 10.1.0.0/24
 YAML
 
-def pool_yaml(provider : String, private_ip : String?, extra_node = "") : String
+def pool_yaml(provider : String, private_ip : String?, extra_node = "", parent : String? = nil) : String
   ip_line = private_ip ? "      private_ip: #{private_ip}\n" : ""
+  parent_line = parent ? "      vlan_parent_interface: \"#{parent}\"\n" : ""
   <<-YAML
   worker_node_pools:
   - name: ext
@@ -38,7 +39,7 @@ def pool_yaml(provider : String, private_ip : String?, extra_node = "") : String
       nodes:
       - host: 1.2.3.4
         robot_server_number: 42
-  #{ip_line}      ssh_user: root
+  #{ip_line}#{parent_line}      ssh_user: root
         ssh_private_key_path: /tmp/key
         index: 1
   #{extra_node}
@@ -82,6 +83,32 @@ describe Configuration::Validators::ExternalNodePool do
   it "rejects the vswitch gateway as private_ip" do
     errors = pool_errors(PRIVATE_WITH_VSWITCH, pool_yaml("robot", "10.1.0.1"))
     errors.any?(&.includes?("gateway")).should be_true
+  end
+
+  it "rejects an IPv6 or malformed private_ip as outside the vswitch subnet" do
+    ["fd00::2", "abc"].each do |bad|
+      errors = pool_errors(PRIVATE_WITH_VSWITCH, pool_yaml("robot", bad))
+      errors.any?(&.includes?("private_ip #{bad} outside the vswitch subnet")).should be_true
+    end
+  end
+
+  it "rejects the vswitch subnet's network and broadcast addresses as private_ip" do
+    pool_errors(PRIVATE_WITH_VSWITCH, pool_yaml("robot", "10.1.0.0")).any?(&.includes?("private_ip 10.1.0.0, which is the vswitch subnet's network address")).should be_true
+    pool_errors(PRIVATE_WITH_VSWITCH, pool_yaml("robot", "10.1.0.255")).any?(&.includes?("private_ip 10.1.0.255, which is the vswitch subnet's broadcast address")).should be_true
+    pool_errors(PRIVATE_WITH_VSWITCH, pool_yaml("robot", "10.1.0.254")).should be_empty
+  end
+
+  it "accepts a Linux interface name as vlan_parent_interface" do
+    ["enp5s0f0np0", "eth0", "bond0.100", "abcdefghijklmno"].each do |name|
+      pool_errors(PRIVATE_WITH_VSWITCH, pool_yaml("robot", "10.1.0.2", parent: name)).should be_empty
+    end
+  end
+
+  it "rejects a vlan_parent_interface that is not a Linux interface name" do
+    ["enp5s0f0np0.4000", "eth0; reboot", "eth 0", "abcdefghijklmnop"].each do |name|
+      errors = pool_errors(PRIVATE_WITH_VSWITCH, pool_yaml("robot", "10.1.0.2", parent: name))
+      errors.any?(&.includes?("vlan_parent_interface '#{name}'")).should be_true
+    end
   end
 
   it "rejects duplicate private_ips" do

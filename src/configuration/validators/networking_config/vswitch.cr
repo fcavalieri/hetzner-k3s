@@ -13,6 +13,8 @@ class Configuration::Validators::NetworkingConfig::VSwitch
 
   def validate
     validate_ip_range
+    # Only with the new keys, so a configuration without them is validated exactly as before.
+    validate_network_address("private network subnet", private_network.subnet) unless private_network.ip_range.nil? && private_network.vswitch.nil?
 
     vswitch = private_network.vswitch
     if vswitch.nil?
@@ -33,6 +35,7 @@ class Configuration::Validators::NetworkingConfig::VSwitch
     ip_range = parse(range)
     subnet = parse(private_network.subnet)
     return errors << "private network ip_range #{range} is not a valid network in CIDR notation" if ip_range.nil?
+    validate_network_address("private network ip_range", range)
     return if subnet.nil?
 
     errors << "private network ip_range #{range} must contain subnet #{private_network.subnet}" unless contains_network?(ip_range, subnet)
@@ -46,6 +49,7 @@ class Configuration::Validators::NetworkingConfig::VSwitch
   private def validate_vswitch_subnet(vswitch)
     vs = parse(vswitch.subnet)
     return errors << "vswitch.subnet #{vswitch.subnet} is not a valid network in CIDR notation" if vs.nil?
+    validate_network_address("vswitch.subnet", vswitch.subnet)
 
     range = parse(private_network.effective_ip_range)
     cloud = parse(private_network.subnet)
@@ -67,6 +71,14 @@ class Configuration::Validators::NetworkingConfig::VSwitch
     return unless settings.networking.cni.cilium? && settings.networking.cni.cilium.routing_mode == "native"
 
     errors << "Cilium native routing cannot be used with Robot nodes on the private network: the CCM route controller is disabled for vSwitch setups, use routing_mode tunnel"
+  end
+
+  # A CIDR with host bits set (10.0.0.5/16) names an address, not a network.
+  private def validate_network_address(what : String, cidr : String) : Nil
+    ip = parse(cidr)
+    return if ip.nil? || ip.network?
+
+    errors << "#{what} #{cidr} is not a network address (host bits are set); did you mean #{ip.network.to_string}?"
   end
 
   private def parse(cidr : String) : IPAddress::IPv4?

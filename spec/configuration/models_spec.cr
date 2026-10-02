@@ -35,6 +35,15 @@ describe Configuration::Models::NetworkingConfig::VSwitch do
     vs.netmask.should eq("255.255.255.0")
     vs.contains?("10.1.0.2").should be_true
     vs.contains?("10.0.0.2").should be_false
+    vs.contains?("fd00::2").should be_false
+    vs.contains?("abc").should be_false
+    vs.network_address.should eq("10.1.0.0")
+    vs.broadcast_address.should eq("10.1.0.255")
+  end
+
+  it "answers contains? without raising when the vswitch subnet itself is invalid" do
+    Configuration::Models::NetworkingConfig::VSwitch.new(4000, "fd00::/64").contains?("10.1.0.2").should be_false
+    Configuration::Models::NetworkingConfig::VSwitch.new(4000, "garbage").contains?("10.1.0.2").should be_false
   end
 
   it "keeps today's behaviour without the new keys" do

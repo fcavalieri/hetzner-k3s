@@ -86,6 +86,7 @@ class Configuration::Validators::ExternalNodePool
 
     validate_robot_config(external_config) if external_config.robot?
     validate_private_ips(external_config) if external_config.robot? && private_network.enabled
+    validate_vlan_parent_interfaces(external_config)
   end
 
   private def validate_provider(external_config)
@@ -142,12 +143,32 @@ class Configuration::Validators::ExternalNodePool
         errors << "External node #{node.host} has private_ip #{private_ip} outside the vswitch subnet #{vswitch.subnet}"
         next
       end
-      errors << "External node #{node.host} has private_ip #{private_ip}, which is the vswitch subnet gateway" if private_ip == vswitch.gateway
+      case private_ip
+      when vswitch.gateway
+        errors << "External node #{node.host} has private_ip #{private_ip}, which is the vswitch subnet gateway"
+      when vswitch.network_address
+        errors << "External node #{node.host} has private_ip #{private_ip}, which is the vswitch subnet's network address"
+      when vswitch.broadcast_address
+        errors << "External node #{node.host} has private_ip #{private_ip}, which is the vswitch subnet's broadcast address"
+      end
     end
 
     all_ips = settings.robot_external_nodes.compact_map(&.private_ip)
     duplicates = all_ips.tally.select { |_, count| count > 1 }.keys
     errors << "External node pool '#{pool.name}' has duplicate private_ip values across Robot pools: #{duplicates.join(", ")}" unless duplicates.empty?
+  end
+
+  # A Linux interface name: at most 15 characters (IFNAMSIZ), no spaces or shell syntax.
+  VLAN_PARENT_INTERFACE_PATTERN = /\A[A-Za-z0-9_.:-]{1,15}\z/
+
+  private def validate_vlan_parent_interfaces(external_config)
+    external_config.nodes.each do |node|
+      parent = node.vlan_parent_interface
+      next if parent.nil? || parent.empty?
+      next if parent.matches?(VLAN_PARENT_INTERFACE_PATTERN)
+
+      errors << "External node #{node.host} has vlan_parent_interface '#{parent}', which is not a Linux interface name (1 to 15 of the characters A-Z a-z 0-9 _ . : -)"
+    end
   end
 
   private def robot_credentials_conflict?(current_external_config) : Bool

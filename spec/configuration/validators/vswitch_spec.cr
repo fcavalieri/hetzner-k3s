@@ -99,6 +99,16 @@ describe Configuration::Validators::NetworkingConfig::VSwitch do
     errors.any?(&.includes?("native routing")).should be_true
   end
 
+  it "rejects ip_range, subnet and vswitch.subnet with host bits set" do
+    vswitch_errors(GOOD.sub("ip_range: 10.0.0.0/15", "ip_range: 10.0.0.5/15")).any?(&.includes?("ip_range 10.0.0.5/15 is not a network address")).should be_true
+    vswitch_errors(GOOD.sub("subnet: 10.0.0.0/16", "subnet: 10.0.0.7/16")).any?(&.includes?("subnet 10.0.0.7/16 is not a network address")).should be_true
+    vswitch_errors(GOOD.sub("subnet: 10.1.0.0/24", "subnet: 10.1.0.9/24")).any?(&.includes?("vswitch.subnet 10.1.0.9/24 is not a network address")).should be_true
+  end
+
+  it "leaves a subnet with host bits alone without the new keys" do
+    vswitch_errors("networking:\n  private_network:\n    subnet: 10.0.0.7/16\n").should be_empty
+  end
+
   it "reports IPv6 networks as invalid instead of raising" do
     errors = vswitch_errors(GOOD.sub("ip_range: 10.0.0.0/15", "ip_range: fd00::/64"))
     errors.any?(&.includes?("not a valid network")).should be_true

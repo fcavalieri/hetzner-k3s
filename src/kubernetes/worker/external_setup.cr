@@ -7,6 +7,7 @@ require "../../hetzner/robot/client"
 require "../../util/ssh"
 require "../deployment_helper"
 require "../local_firewall/setup"
+require "./vlan_setup"
 require "../script/worker_generator"
 require "../script/labels_and_taints_generator"
 
@@ -76,7 +77,8 @@ class Kubernetes::Worker::ExternalSetup
     # setup steps (hostname, packages, pre/post commands, k3s install) but
     # still reconcile the firewall, which is safe to redeploy.
     if node_initialized?(node_ssh, instance, node.ssh_port, use_sudo)
-      log_line "External node #{node.host} is already initialized, reconciling firewall only", node.host
+      log_line "External node #{node.host} is already initialized, reconciling network and firewall only", node.host
+      configure_vlan(node, node_ssh, instance, use_sudo, first_master) if settings.robot_private_network?
       deploy_firewall(instance, node_ssh, node.ssh_port, use_sudo)
       log_line "...external node #{node.host} set up", node.host
       return
@@ -95,6 +97,8 @@ class Kubernetes::Worker::ExternalSetup
     # DNS resolver (same as cloud-init)
     run_ssh(node_ssh, instance, node.ssh_port, sudo_command("echo nameserver 8.8.8.8 > /etc/k8s-resolv.conf", use_sudo))
 
+    vlan_interface = settings.robot_private_network? ? configure_vlan(node, node_ssh, instance, use_sudo, first_master) : nil
+
     deploy_firewall(instance, node_ssh, node.ssh_port, use_sudo)
 
     # e. Pre-k3s commands
@@ -103,7 +107,7 @@ class Kubernetes::Worker::ExternalSetup
     # f. k3s installation — generate and deploy worker install script.
     # Base64-encode and pipe to bash (via sudo when the SSH user is not root)
     # so the script content is transmitted verbatim without shell interpretation.
-    script = generate_worker_script(masters, first_master, pool, node)
+    script = generate_worker_script(masters, first_master, pool, node, vlan_interface)
     runner = use_sudo ? "sudo bash" : "bash"
     run_ssh(node_ssh, instance, node.ssh_port, "echo '#{Base64.strict_encode(script)}' | base64 -d | #{runner}")
 
@@ -173,8 +177,49 @@ class Kubernetes::Worker::ExternalSetup
     end
   end
 
-  private def generate_worker_script(masters, first_master, pool, node) : String
-    @worker_generator.generate_script(masters, first_master, pool, node)
+  private def generate_worker_script(masters, first_master, pool, node, vlan_interface : String?) : String
+    @worker_generator.generate_script(masters, first_master, pool, node, vlan_interface)
+  end
+
+  # Writes and brings up the vSwitch VLAN interface, then proves the master is reachable
+  # through it. Idempotent: the file is rewritten and re-applied on every run. Returns the
+  # VLAN interface name for the k3s flags.
+  private def configure_vlan(node, ssh, instance, use_sudo, first_master) : String
+    vlan_setup = Kubernetes::Worker::VlanSetup.new(settings, node)
+
+    parent = node.vlan_parent_interface.presence || capture_ssh(ssh, instance, node.ssh_port, sudo_command(Kubernetes::Worker::VlanSetup::DETECT_PARENT_COMMAND, use_sudo))
+    raise "Cannot determine the public network interface of external node #{node.host} (no default route); set vlan_parent_interface" if parent.empty?
+
+    mechanism = capture_ssh(ssh, instance, node.ssh_port, sudo_command(Kubernetes::Worker::VlanSetup::DETECT_MECHANISM_COMMAND, use_sudo))
+    interface = vlan_setup.interface_name(parent)
+    log_line "Configuring vSwitch VLAN interface #{interface} (#{mechanism}) with #{node.private_ip}...", node.host
+    begin
+      run_ssh(ssh, instance, node.ssh_port, sudo_command(vlan_setup.apply_command(mechanism, parent), use_sudo))
+    rescue ex
+      # `netplan apply` can drop the SSH session on some images even though the configuration landed.
+      sleep 5.seconds
+      begin
+        run_ssh(ssh, instance, node.ssh_port, sudo_command("ip -4 -o addr show dev #{interface} | grep -q ' #{node.private_ip}/'", use_sudo))
+        log_line "...applying the VLAN configuration dropped the SSH session, but #{interface} has #{node.private_ip}; continuing", node.host
+      rescue
+        raise ex
+      end
+    end
+
+    master_ip = api_server_ip_address(first_master)
+    begin
+      run_ssh(ssh, instance, node.ssh_port, sudo_command(vlan_setup.reachability_command(master_ip), use_sudo))
+    rescue ex
+      vswitch = settings.networking.private_network.vswitch.not_nil!
+      raise "External node #{node.host} cannot reach the first master at #{master_ip} through the vSwitch (VLAN #{vswitch.vlan}, interface #{interface}, route #{settings.networking.private_network.effective_ip_range} via #{vswitch.gateway}). The vSwitch can take a few minutes to come up on Hetzner's side; check its status in Robot and the vSwitch subnet in the Cloud Console, then re-run. (#{ex.message})"
+    end
+
+    log_line "...vSwitch VLAN interface #{interface} up, master #{master_ip} reachable", node.host
+    interface
+  end
+
+  private def capture_ssh(ssh, instance, port, script) : String
+    ssh.run(instance, port, script, false, print_output: false).strip
   end
 
   private def run_ssh(ssh, instance, port, script)

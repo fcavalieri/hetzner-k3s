@@ -29,7 +29,10 @@ class Cluster::VSwitchManager
     return nil unless settings.robot_private_network?
 
     config = settings.networking.private_network.vswitch.not_nil!
-    vswitch = find_or_create(config)
+    existing, listing = find_with_listing(config)
+    check_vlan(existing, config) if existing
+    refuse_foreign_membership(config, existing, listing)
+    vswitch = existing || create(config)
     attached = attach_missing(vswitch)
     # Nothing attached: the detail fetched by find_or_create is current, so a clean re-run needs no extra read.
     wait_until_ready(vswitch.id) unless !attached && all_ready?(vswitch.servers)
@@ -62,26 +65,51 @@ class Cluster::VSwitchManager
   end
 
   private def find(config) : Hetzner::Robot::Client::VSwitch?
+    find_with_listing(config)[0]
+  end
+
+  # Returns our vSwitch (detail) and, when it was looked up by name, the listing that was read.
+  private def find_with_listing(config) : {Hetzner::Robot::Client::VSwitch?, Array(Hetzner::Robot::Client::VSwitch)?}
     if existing_id = config.existing_vswitch_id
-      return robot_client.vswitch(existing_id)
+      return {robot_client.vswitch(existing_id), nil}
     end
 
     name = config.name_for(settings.cluster_name)
-    listed = robot_client.vswitches.find { |candidate| candidate.name == name }
-    listed ? robot_client.vswitch(listed.id) : nil
+    listing = robot_client.vswitches
+    listed = listing.find { |candidate| candidate.name == name }
+    {listed ? robot_client.vswitch(listed.id) : nil, listing}
   end
 
-  private def find_or_create(config) : Hetzner::Robot::Client::VSwitch
-    if vswitch = find(config)
-      unless vswitch.vlan == config.vlan
-        raise "vSwitch #{vswitch.name} (#{vswitch.id}) uses VLAN #{vswitch.vlan} but the configuration says #{config.vlan}; fix vswitch.vlan or point existing_vswitch_id elsewhere"
-      end
-      return vswitch
-    end
+  private def check_vlan(vswitch, config) : Nil
+    return if vswitch.vlan == config.vlan
 
+    raise "vSwitch #{vswitch.name} (#{vswitch.id}) uses VLAN #{vswitch.vlan} but the configuration says #{config.vlan}; fix vswitch.vlan or point existing_vswitch_id elsewhere"
+  end
+
+  private def create(config) : Hetzner::Robot::Client::VSwitch
     name = config.name_for(settings.cluster_name)
     log_line "Creating vSwitch #{name} (VLAN #{config.vlan})..."
     robot_client.create_vswitch(name, config.vlan)
+  end
+
+  # A Robot server can sit on several vSwitches, but only one of them may carry this
+  # cluster's VLAN. When servers still have to be attached, refuse if one of them is already
+  # on another vSwitch, instead of silently attaching it to a second one. Costs no Robot call
+  # on a re-run where every wanted server is already on our vSwitch.
+  private def refuse_foreign_membership(config, ours, listing) : Nil
+    missing = wanted_server_numbers - (ours ? ours.server_numbers : [] of Int32)
+    return if missing.empty?
+
+    our_name = config.name_for(settings.cluster_name)
+    listing ||= robot_client.vswitches
+
+    listing.each do |candidate|
+      next if ours ? candidate.id == ours.id : (config.existing_vswitch_id.nil? && candidate.name == our_name)
+      attached = robot_client.vswitch(candidate.id).server_numbers & missing
+      next if attached.empty?
+
+      raise "Robot server(s) #{attached.join(", ")} are already attached to vSwitch #{candidate.name} (#{candidate.id}, VLAN #{candidate.vlan}); set existing_vswitch_id: #{candidate.id} to reuse it or detach them in Robot"
+    end
   end
 
   private def all_ready?(servers) : Bool

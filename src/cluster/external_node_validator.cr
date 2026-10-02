@@ -34,6 +34,22 @@ class Cluster::ExternalNodeValidator
     log_line "...all external nodes validated"
   end
 
+  private def validate_vlan_prerequisites(node, ssh, instance, errors)
+    mechanism = ssh.run(instance, node.ssh_port, "if [ -d /etc/netplan ]; then echo netplan; elif [ -d /etc/network ]; then echo ifupdown; else echo none; fi", false, print_output: false).strip
+    if mechanism == "none"
+      errors << "External node #{node.host} has neither netplan (/etc/netplan) nor ifupdown (/etc/network); hetzner-k3s can only configure the vSwitch VLAN interface with one of those."
+      return
+    end
+
+    parent = node.vlan_parent_interface
+    return if parent.nil? || parent.empty?
+
+    found = ssh.run(instance, node.ssh_port, "ip -o link show dev #{parent} >/dev/null 2>&1 && echo yes || echo no", false, print_output: false).strip
+    errors << "External node #{node.host} has no network interface named '#{parent}' (vlan_parent_interface)." unless found == "yes"
+  rescue ex
+    errors << "Cannot check the vSwitch VLAN prerequisites on external node #{node.host}: #{ex.message}"
+  end
+
   private def validate_node(node, pool, generated_hostnames, existing_hostnames, errors, warnings)
     ssh = Util::SSH.new(node.ssh_private_key_path, "", false, node.ssh_user)
     instance = Hetzner::Instance.new(0, "running", node.host, node.host, node.host)
@@ -74,6 +90,8 @@ class Cluster::ExternalNodeValidator
       errors << "Cannot determine OS on external node #{node.host}. Ensure /etc/os-release exists and is readable."
       return
     end
+
+    validate_vlan_prerequisites(node, ssh, instance, errors) if @settings.robot_private_network? && external_config.robot?
 
     # Rule #5: password authentication warning (non-blocking)
     begin

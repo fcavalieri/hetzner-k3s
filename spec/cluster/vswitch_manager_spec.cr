@@ -117,6 +117,14 @@ describe Cluster::VSwitchManager do
     expect_raises(Exception, /failed for server\(s\) 42/) { Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute).ensure }
   end
 
+  it "refuses a server that is attached to a different vswitch" do
+    client = FakeRobotClient.new([RVS.new(77, "other", 4005, [RVSS.new(42, "ready")])])
+    expect_raises(Exception, /server\(s\) 42 .*already attached to vSwitch other \(77, VLAN 4005\)/) do
+      Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute).ensure
+    end
+    client.calls.none?(&.starts_with?("create")).should be_true
+  end
+
   it "returns nil without robot pools on the private network" do
     settings = Configuration::Main.from_yaml("hetzner_token: x\ncluster_name: t\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\n")
     Cluster::VSwitchManager.new(settings, FakeRobotClient.new, 0.seconds, 1.minute).ensure.should be_nil

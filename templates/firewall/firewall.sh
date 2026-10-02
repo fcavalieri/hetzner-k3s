@@ -11,6 +11,7 @@ trap 'log "ERROR: Command failed at line $LINENO: $BASH_COMMAND"; exit 1' ERR
 # Configuration (injected via Crinja templating)
 readonly HETZNER_TOKEN="{{ hetzner_token }}"
 readonly HETZNER_IPS_URL="{{ hetzner_ips_query_server_url }}/ips"
+readonly STATIC_NODE_NETWORKS="{{ static_node_networks }}"
 readonly SSH_PORT="{{ ssh_port }}"
 readonly CLUSTER_CIDR="{{ cluster_cidr }}"
 readonly SERVICE_CIDR="{{ service_cidr }}"
@@ -236,6 +237,12 @@ restore_iptables() {
 # =============================================================================
 
 fetch_node_ips() {
+    # Private-network mode: the allowed node networks are fixed, no query server involved
+    if [ -n "$STATIC_NODE_NETWORKS" ]; then
+        echo "$STATIC_NODE_NETWORKS" | tr ',' '\n'
+        return 0
+    fi
+
     local attempt=0
 
     while [ $attempt -lt $API_RETRIES ]; do

@@ -144,7 +144,7 @@ class Kubernetes::Worker::ExternalSetup
   end
 
   private def deploy_firewall(instance, ssh, port, use_sudo)
-    @local_firewall_setup.deploy_with_ssh(instance, ssh, port, use_sudo)
+    @local_firewall_setup.deploy_external(instance, ssh, port, use_sudo)
   end
 
   private def run_pre_k3s_commands(ssh, instance, port, pool, use_sudo)

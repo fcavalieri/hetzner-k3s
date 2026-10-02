@@ -13,53 +13,60 @@ if [ "{{ private_network_enabled }}" = "true" ]; then
   echo "Using Hetzner private network" >/var/log/hetzner-k3s.log
   SUBNET="{{ private_network_subnet }}"
 
-  # Wait for private network interface to be available
-  MAX_ATTEMPTS=30
-  DELAY=10
+  if [ -n "{{ external_private_ip }}" ]; then
+    # Robot node on a vSwitch: hetzner-k3s configured the VLAN interface before running this script
+    NETWORK_INTERFACE="{{ external_vlan_interface }}"
+    PRIVATE_IP="{{ external_private_ip }}"
+    echo "Using vSwitch interface $NETWORK_INTERFACE with private IP $PRIVATE_IP" 2>&1 | tee -a /var/log/hetzner-k3s.log
+  else
+    # Wait for private network interface to be available
+    MAX_ATTEMPTS=30
+    DELAY=10
 
-  for i in $(seq 1 $MAX_ATTEMPTS); do
-    # Simplified network interface detection.
-    # NOTE: MTU 1280 matches WireGuard's default — mesh agents like NetBird,
-    # Tailscale, or raw wg-quick create interfaces (wt0, wg0, tailscale0,
-    # netbird0, ...) that would otherwise be picked here over the real
-    # Hetzner private vlan (enp7s0, MTU 1450). Exclude them by name.
-    NETWORK_INTERFACE=$(
-      ip -o link show |
-        awk -F': ' '/mtu (1450|1280)/ {print $2}' |
-        grep -Ev 'cilium|lxc|br|flannel|docker|veth|wt|wg|tailscale|netbird' |
+    for i in $(seq 1 $MAX_ATTEMPTS); do
+      # Simplified network interface detection.
+      # NOTE: MTU 1280 matches WireGuard's default — mesh agents like NetBird,
+      # Tailscale, or raw wg-quick create interfaces (wt0, wg0, tailscale0,
+      # netbird0, ...) that would otherwise be picked here over the real
+      # Hetzner private vlan (enp7s0, MTU 1450). Exclude them by name.
+      NETWORK_INTERFACE=$(
+        ip -o link show |
+          awk -F': ' '/mtu (1450|1280)/ {print $2}' |
+          grep -Ev 'cilium|lxc|br|flannel|docker|veth|wt|wg|tailscale|netbird' |
+          head -n1
+      )
+
+      if [ -n "$NETWORK_INTERFACE" ]; then
+        echo "Private network interface $NETWORK_INTERFACE found" 2>&1 | tee -a /var/log/hetzner-k3s.log
+        break
+      fi
+
+      echo "Waiting for private network interface in subnet $SUBNET... (Attempt $i/$MAX_ATTEMPTS)" 2>&1 | tee -a /var/log/hetzner-k3s.log
+      sleep $DELAY
+    done
+
+    # Check if we found the interface
+    if [ -z "$NETWORK_INTERFACE" ]; then
+      echo "ERROR: Timeout waiting for private network interface in subnet $SUBNET" 2>&1 | tee -a /var/log/hetzner-k3s.log
+      exit 1
+    fi
+
+    # Get private IP address
+    PRIVATE_IP=$(
+      ip -4 -o addr show dev "$NETWORK_INTERFACE" |
+        awk '{print $4}' |
+        cut -d'/' -f1 |
         head -n1
     )
 
-    if [ -n "$NETWORK_INTERFACE" ]; then
-      echo "Private network interface $NETWORK_INTERFACE found" 2>&1 | tee -a /var/log/hetzner-k3s.log
-      break
+    # Verify we got a private IP
+    if [ -z "$PRIVATE_IP" ]; then
+      echo "ERROR: Could not determine private IP address for interface $NETWORK_INTERFACE" 2>&1 | tee -a /var/log/hetzner-k3s.log
+      exit 1
     fi
 
-    echo "Waiting for private network interface in subnet $SUBNET... (Attempt $i/$MAX_ATTEMPTS)" 2>&1 | tee -a /var/log/hetzner-k3s.log
-    sleep $DELAY
-  done
-
-  # Check if we found the interface
-  if [ -z "$NETWORK_INTERFACE" ]; then
-    echo "ERROR: Timeout waiting for private network interface in subnet $SUBNET" 2>&1 | tee -a /var/log/hetzner-k3s.log
-    exit 1
+    echo "Private network IP: $PRIVATE_IP" 2>&1 | tee -a /var/log/hetzner-k3s.log
   fi
-
-  # Get private IP address
-  PRIVATE_IP=$(
-    ip -4 -o addr show dev "$NETWORK_INTERFACE" |
-      awk '{print $4}' |
-      cut -d'/' -f1 |
-      head -n1
-  )
-
-  # Verify we got a private IP
-  if [ -z "$PRIVATE_IP" ]; then
-    echo "ERROR: Could not determine private IP address for interface $NETWORK_INTERFACE" 2>&1 | tee -a /var/log/hetzner-k3s.log
-    exit 1
-  fi
-
-  echo "Private network IP: $PRIVATE_IP" 2>&1 | tee -a /var/log/hetzner-k3s.log
   FLANNEL_SETTINGS="--flannel-iface=$NETWORK_INTERFACE"
 else
   echo "Using public network" >/var/log/hetzner-k3s.log

@@ -1,0 +1,9 @@
+# Managed by hetzner-k3s: VLAN interface for the Hetzner vSwitch (do not edit by hand)
+auto {{ vlan_interface }}
+iface {{ vlan_interface }} inet static
+  address {{ private_ip }}
+  netmask {{ netmask }}
+  vlan-raw-device {{ parent_interface }}
+  mtu {{ mtu }}
+  up ip route add {{ ip_range }} via {{ gateway }} dev {{ vlan_interface }}
+  down ip route del {{ ip_range }} via {{ gateway }} dev {{ vlan_interface }}

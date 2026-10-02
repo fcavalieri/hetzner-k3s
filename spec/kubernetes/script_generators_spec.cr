@@ -46,4 +46,25 @@ describe "install scripts" do
     Kubernetes::Script::MasterGenerator.new(loader, settings).generate_script(master, [master], master, nil, kubeconfig_manager).should_not contain("flannel-conf")
     Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first).should_not contain("flannel-conf")
   end
+
+  it "uses the injected private IP and VLAN interface for a Robot node" do
+    robot_yaml = BASE_CLUSTER + "- name: robot\n  instance_type: external\n  instance_count: 1\n  external:\n    provider: robot\n    robot_user: u\n    robot_password: p\n    nodes:\n    - host: 1.2.3.4\n      robot_server_number: 42\n      private_ip: 10.1.0.2\n      ssh_user: root\n      ssh_private_key_path: /tmp/key\n      index: 1\n" + VSWITCH_NET
+    loader = loader_for(robot_yaml)
+    settings = loader.settings
+    pool = settings.worker_node_pools.last
+    script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, pool, pool.external.not_nil!.nodes.first, "enp0s31f6.4000")
+    script.should contain(%(NETWORK_INTERFACE="enp0s31f6.4000"))
+    script.should contain(%(PRIVATE_IP="10.1.0.2"))
+    script.should contain("K3S_URL=https://10.0.0.2:6443")
+    script.should contain("--flannel-iface=$NETWORK_INTERFACE")
+    script.should contain("provider-id=hrobot://42")
+  end
+
+  it "keeps interface detection for cloud workers on the private network" do
+    loader = loader_for(BASE_CLUSTER + VSWITCH_NET)
+    settings = loader.settings
+    script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first)
+    script.should contain("Waiting for private network interface")
+    script.should contain(%(if [ -n "" ]; then))
+  end
 end

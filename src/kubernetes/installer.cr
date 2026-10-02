@@ -7,6 +7,7 @@ require "../util/ssh"
 require "./control_plane/setup"
 require "./kubeconfig_manager"
 require "./local_firewall/setup"
+require "./network/private_route_setup"
 require "./script/master_generator"
 require "./script/worker_generator"
 require "./software/cilium"
@@ -37,6 +38,7 @@ class Kubernetes::Installer
   private getter worker_setup : Kubernetes::Worker::Setup
   private getter external_worker_setup : Kubernetes::Worker::ExternalSetup
   private getter local_firewall_setup : Kubernetes::LocalFirewall::Setup
+  private getter private_route_setup : Kubernetes::Network::PrivateRouteSetup
 
   def initialize(
     @configuration,
@@ -52,6 +54,7 @@ class Kubernetes::Installer
     @worker_setup = Kubernetes::Worker::Setup.new(@configuration, settings, @ssh, @worker_generator)
     @external_worker_setup = Kubernetes::Worker::ExternalSetup.new(@configuration, settings, @ssh, @worker_generator)
     @local_firewall_setup = Kubernetes::LocalFirewall::Setup.new(settings, @ssh)
+    @private_route_setup = Kubernetes::Network::PrivateRouteSetup.new(settings, @ssh)
   end
 
   private getter masters : Array(Hetzner::Instance) = [] of Hetzner::Instance
@@ -63,13 +66,15 @@ class Kubernetes::Installer
     @masters, @first_master_instance = @control_plane_setup.set_up_control_plane(masters_installation_queue_channel, master_count, load_balancer)
 
     @local_firewall_setup.deploy_to_all_nodes(first_master, @masters)
+    @private_route_setup.deploy(@masters)
 
     @software_installer.install_all(@first_master_instance, @masters, ssh, autoscaling_worker_node_pools)
 
     @external_worker_setup.set_up_external_workers(@masters, first_master) if has_external_workers?
 
     if worker_count > 0
-      @worker_setup.set_up_workers(workers_installation_queue_channel, worker_count, @masters, @first_master_instance)
+      workers = @worker_setup.set_up_workers(workers_installation_queue_channel, worker_count, @masters, @first_master_instance)
+      @private_route_setup.deploy(workers)
     end
     @external_worker_setup.wait_for_external_workers_to_be_ready(first_master) if has_external_workers?
 

@@ -16,6 +16,32 @@ class Hetzner::Robot::Client
     end
   end
 
+  class VSwitchServer
+    getter number : Int32
+    getter status : String
+
+    def initialize(@number, @status)
+    end
+  end
+
+  class VSwitch
+    getter id : Int32
+    getter name : String
+    getter vlan : Int32
+    getter servers : Array(VSwitchServer)
+
+    def initialize(@id, @name, @vlan, @servers)
+    end
+
+    def server_numbers : Array(Int32)
+      servers.map(&.number)
+    end
+  end
+
+  def self.servers_form_body(server_numbers : Array(Int32)) : String
+    server_numbers.map { |number| "server[]=#{number}" }.join("&")
+  end
+
   private getter api_url : String = "https://robot-ws.your-server.de"
   private getter username : String
   private getter password : String
@@ -38,6 +64,48 @@ class Hetzner::Robot::Client
     raise Error.new("Failed to update Robot server #{server_number} name: #{response.strip}") unless success
 
     parse_server(response)
+  end
+
+  def vswitches : Array(VSwitch)
+    success, response = get("/vswitch")
+    raise Error.new("Failed to list Robot vSwitches: #{response.strip}") unless success
+
+    JSON.parse(response).as_a.map { |item| parse_vswitch(item) }
+  rescue ex : JSON::ParseException | KeyError | TypeCastError
+    raise Error.new("Robot vSwitch list could not be parsed: #{ex.message}")
+  end
+
+  def vswitch(id : Int32) : VSwitch
+    success, response = get("/vswitch/#{id}")
+    raise Error.new("Failed to fetch Robot vSwitch #{id}: #{response.strip}") unless success
+
+    parse_vswitch(JSON.parse(response))
+  rescue ex : JSON::ParseException | KeyError | TypeCastError
+    raise Error.new("Robot vSwitch #{id} response could not be parsed: #{ex.message}")
+  end
+
+  def create_vswitch(name : String, vlan : Int32) : VSwitch
+    success, response = post("/vswitch", {"name" => name, "vlan" => vlan.to_s})
+    raise Error.new("Failed to create Robot vSwitch #{name} (VLAN #{vlan}): #{response.strip}") unless success
+
+    parse_vswitch(JSON.parse(response))
+  rescue ex : JSON::ParseException | KeyError | TypeCastError
+    raise Error.new("Robot vSwitch create response could not be parsed: #{ex.message}")
+  end
+
+  def add_vswitch_servers(id : Int32, server_numbers : Array(Int32)) : Nil
+    success, response = post_form("/vswitch/#{id}/server", self.class.servers_form_body(server_numbers))
+    raise Error.new("Failed to add server(s) #{server_numbers.join(", ")} to Robot vSwitch #{id}: #{response.strip}") unless success
+  end
+
+  def remove_vswitch_servers(id : Int32, server_numbers : Array(Int32)) : Nil
+    success, response = delete_form("/vswitch/#{id}/server", self.class.servers_form_body(server_numbers))
+    raise Error.new("Failed to remove server(s) #{server_numbers.join(", ")} from Robot vSwitch #{id}: #{response.strip}") unless success
+  end
+
+  def delete_vswitch(id : Int32) : Nil
+    success, response = delete_form("/vswitch/#{id}", "")
+    raise Error.new("Failed to delete Robot vSwitch #{id}: #{response.strip}") unless success
   end
 
   private def get(path)
@@ -69,6 +137,46 @@ class Hetzner::Robot::Client
     end
 
     handle_response(response)
+  end
+
+  # Raw application/x-www-form-urlencoded body: Robot's array parameters (server[]=...)
+  # need the literal brackets, which Crest's Hash encoder does not produce.
+  private def post_form(path, body : String)
+    response = with_network_retry do
+      Crest::Request.new(:post, "#{api_url}#{path}",
+        form: body,
+        headers: headers.merge({"Content-Type" => "application/x-www-form-urlencoded"}),
+        handle_errors: false,
+        connect_timeout: connect_timeout,
+        read_timeout: read_timeout,
+        write_timeout: write_timeout
+      ).execute
+    end
+
+    handle_response(response)
+  end
+
+  private def delete_form(path, body : String)
+    response = with_network_retry do
+      Crest::Request.new(:delete, "#{api_url}#{path}",
+        form: body,
+        headers: headers.merge({"Content-Type" => "application/x-www-form-urlencoded"}),
+        handle_errors: false,
+        connect_timeout: connect_timeout,
+        read_timeout: read_timeout,
+        write_timeout: write_timeout
+      ).execute
+    end
+
+    handle_response(response)
+  end
+
+  private def parse_vswitch(json : JSON::Any) : VSwitch
+    object = json["vswitch"]? || json
+    servers = (object["server"]?.try(&.as_a) || [] of JSON::Any).map do |server|
+      VSwitchServer.new(server["server_number"].as_i, server["status"]?.try(&.as_s) || "ready")
+    end
+    VSwitch.new(object["id"].as_i, object["name"].as_s, object["vlan"].as_i, servers)
   end
 
   private def headers

@@ -11,6 +11,8 @@ require "../util/shell"
 require "../util"
 require "../util/ssh"
 require "./node_detection"
+require "../kubernetes/worker/vlan_setup"
+require "./vswitch_manager"
 
 class Cluster::Delete
   include Util
@@ -68,6 +70,7 @@ class Cluster::Delete
     delete_instances
     delete_placement_groups
     delete_network if settings.networking.private_network.enabled
+    cleanup_vswitch if settings.robot_private_network?
     delete_firewall if settings.networking.private_network.enabled || !settings.networking.public_network.use_local_firewall
     delete_ssh_key
   end
@@ -105,6 +108,12 @@ class Cluster::Delete
 
       # 2. Remove firewall and reset packet filtering so the node is left open.
       ssh.run(instance, node.ssh_port, firewall_cleanup_command(use_sudo), false, print_output: false)
+
+      # 3. Remove the vSwitch VLAN interface hetzner-k3s configured, if any.
+      if settings.robot_private_network?
+        vlan = settings.networking.private_network.vswitch.not_nil!.vlan
+        ssh.run(instance, node.ssh_port, "#{sudo_prefix(use_sudo)}bash -c '#{Kubernetes::Worker::VlanSetup.cleanup_command(vlan).gsub("'", "'\\''")}'", false, print_output: false)
+      end
 
       log_line "Cleaned up external node #{node.host}"
     rescue ex
@@ -219,6 +228,18 @@ class Cluster::Delete
       hetzner_client: hetzner_client,
       network_name: settings.cluster_name
     ).run
+  end
+
+  # The network deletion above removed the vSwitch subnet (the cloud side of the coupling);
+  # now detach this cluster's servers and drop the vSwitch if hetzner-k3s created it.
+  private def cleanup_vswitch
+    manager = Cluster::VSwitchManager.for(settings)
+    return unless manager
+
+    manager.cleanup
+  rescue ex
+    log_line "#{force ? "Warning" : "Error"}: vSwitch cleanup failed: #{ex.message}"
+    exit 1 unless force
   end
 
   private def delete_firewall

@@ -17,6 +17,9 @@ module Kubernetes::Script::FlannelConf
     mtu = Kubernetes::NetworkMTU.for(settings)
     return "" if mtu.nil? || !settings.networking.cni.flannel?
 
+    # "wireguard" is flannel's registered backend name; "wireguard-native" is only the k3s CLI
+    # flag value. k3s itself writes {"Type": "wireguard", ...} for --flannel-backend=wireguard-native
+    # (pkg/agent/flannel/setup.go), so the type string must not follow flannel_backend's flag.
     backend = if wireguard?(settings)
                 %({"Type": "wireguard", "PersistentKeepaliveInterval": 25, "MTU": #{mtu}})
               else

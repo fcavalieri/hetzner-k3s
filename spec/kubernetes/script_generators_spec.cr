@@ -1,15 +1,9 @@
 require "../spec_helper"
 require "../support/k3s_stubs"
-require "../../src/configuration/loader"
+require "../support/loader"
 require "../../src/kubernetes/script/master_generator"
 require "../../src/kubernetes/script/worker_generator"
 require "../../src/kubernetes/kubeconfig_manager"
-
-def loader_for(yaml : String) : Configuration::Loader
-  path = File.tempname("hk3s-spec", ".yaml")
-  File.write(path, yaml)
-  Configuration::Loader.new(path, nil, false)
-end
 
 BASE_CLUSTER = "hetzner_token: x\ncluster_name: test\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\nworker_node_pools:\n- name: static\n  instance_type: cx22\n  instance_count: 1\n"
 VSWITCH_NET = "networking:\n  cni:\n    encryption: false\n  private_network:\n    ip_range: 10.0.0.0/15\n    subnet: 10.0.0.0/16\n    vswitch:\n      vlan: 4000\n      subnet: 10.1.0.0/24\n"
@@ -29,6 +23,20 @@ describe "install scripts" do
     worker_script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first)
     worker_script.should contain("--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json")
     worker_script.should contain(%("MTU": 1400))
+  end
+
+  it "pass the wireguard backend and MTU when encryption is on" do
+    net = VSWITCH_NET.sub("encryption: false", "mode: flannel\n    encryption: true")
+    loader = loader_for(BASE_CLUSTER + net)
+    settings = loader.settings
+    kubeconfig_manager = Kubernetes::KubeconfigManager.new(loader, settings, Util::SSH.new("/tmp/key"))
+    master_script = Kubernetes::Script::MasterGenerator.new(loader, settings).generate_script(master, [master], master, nil, kubeconfig_manager)
+    worker_script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first)
+    master_script.should contain("--flannel-backend=wireguard-native")
+    [master_script, worker_script].each do |script|
+      script.should contain(%("Type": "wireguard", "PersistentKeepaliveInterval": 25, "MTU": 1400))
+      script.should contain("--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json")
+    end
   end
 
   it "render no flannel override without a vswitch" do

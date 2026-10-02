@@ -75,6 +75,15 @@ cat >/etc/rancher/k3s/registries.yaml <<\EOF
 {{ private_registry_config | trim }}
 EOF
 
+# Flannel config override: makes every node assume the vSwitch MTU (see Kubernetes::Script::FlannelConf)
+FLANNEL_CONF_ARG=""
+{% if flannel_net_conf != "" %}
+cat >/etc/rancher/k3s/flannel-net-conf.json <<\FLANNELCONF
+{{ flannel_net_conf }}
+FLANNELCONF
+FLANNEL_CONF_ARG="--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json"
+{% endif %}
+
 # Set provider ID. Generic external nodes use a non-HCCM scheme; Robot nodes
 # use hrobot:// so HCCM can initialize them when Robot support is enabled.
 KUBELET_PROVIDER_ID=""
@@ -103,7 +112,7 @@ curl -sfL https://get.k3s.io | \
     --node-ip=$PRIVATE_IP \
     --node-external-ip=$PUBLIC_IP \
     $KUBELET_PROVIDER_ID \
-    $FLANNEL_SETTINGS 2>&1 | tee -a /var/log/hetzner-k3s.log
+    $FLANNEL_SETTINGS $FLANNEL_CONF_ARG 2>&1 | tee -a /var/log/hetzner-k3s.log
 install_status=("${PIPESTATUS[@]}")
 
 # Check if installation was successful

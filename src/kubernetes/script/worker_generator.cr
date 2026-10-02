@@ -5,6 +5,7 @@ require "../../configuration/loader"
 require "../../configuration/models/external_node"
 require "../deployment_helper"
 require "../util"
+require "./flannel_conf"
 require "./labels_and_taints_generator"
 
 class Kubernetes::Script::WorkerGenerator
@@ -42,6 +43,7 @@ class Kubernetes::Script::WorkerGenerator
       additional_post_k3s_commands: post_k3s_commands,
       kubelet_provider_id:          kubelet_provider_id(pool, external_node),
       external_node_name:           external_node_name(pool, external_node),
+      flannel_net_conf:             Kubernetes::Script::FlannelConf.render(@settings),
     })
   end
 

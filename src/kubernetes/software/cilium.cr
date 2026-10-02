@@ -1,6 +1,7 @@
 require "../../configuration/loader"
 require "../../configuration/main"
 require "../../util"
+require "../network_mtu"
 require "../../util/shell"
 require "crinja"
 
@@ -118,6 +119,7 @@ class Kubernetes::Software::Cilium
       operator_memory_request: cilium_config.operator_memory_request || DEFAULT_OPERATOR_MEMORY_REQUEST,
       agent_memory_request:    cilium_config.agent_memory_request || DEFAULT_AGENT_MEMORY_REQUEST,
       egress_gateway_enabled:  settings.networking.cni.cilium_egress_gateway,
+      mtu:                     Kubernetes::NetworkMTU.for(settings),
     }
 
     Crinja.render(CILIUM_VALUES_TEMPLATE, template_vars)

@@ -1,0 +1,41 @@
+require "../spec_helper"
+require "../support/k3s_stubs"
+require "../../src/configuration/loader"
+require "../../src/kubernetes/script/master_generator"
+require "../../src/kubernetes/script/worker_generator"
+require "../../src/kubernetes/kubeconfig_manager"
+
+def loader_for(yaml : String) : Configuration::Loader
+  path = File.tempname("hk3s-spec", ".yaml")
+  File.write(path, yaml)
+  Configuration::Loader.new(path, nil, false)
+end
+
+BASE_CLUSTER = "hetzner_token: x\ncluster_name: test\nkubeconfig_path: /tmp/k\nk3s_version: v1.36.1+k3s1\nmasters_pool:\n  instance_type: cx22\n  instance_count: 1\nworker_node_pools:\n- name: static\n  instance_type: cx22\n  instance_count: 1\n"
+VSWITCH_NET = "networking:\n  cni:\n    encryption: false\n  private_network:\n    ip_range: 10.0.0.0/15\n    subnet: 10.0.0.0/16\n    vswitch:\n      vlan: 4000\n      subnet: 10.1.0.0/24\n"
+
+describe "install scripts" do
+  K3s.preset_token("spec-token")
+  master = Hetzner::Instance.new(1, "running", "test-master1", "10.0.0.2", "1.1.1.1")
+
+  it "pass --flannel-conf on master and worker when a vswitch is configured" do
+    loader = loader_for(BASE_CLUSTER + VSWITCH_NET)
+    settings = loader.settings
+    kubeconfig_manager = Kubernetes::KubeconfigManager.new(loader, settings, Util::SSH.new("/tmp/key"))
+    master_script = Kubernetes::Script::MasterGenerator.new(loader, settings).generate_script(master, [master], master, nil, kubeconfig_manager)
+    master_script.should contain("cat >/etc/rancher/k3s/flannel-net-conf.json")
+    master_script.should contain(%("Type": "vxlan", "MTU": 1400))
+    master_script.should contain("--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json")
+    worker_script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first)
+    worker_script.should contain("--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json")
+    worker_script.should contain(%("MTU": 1400))
+  end
+
+  it "render no flannel override without a vswitch" do
+    loader = loader_for(BASE_CLUSTER + "networking:\n  cni:\n    encryption: false\n")
+    settings = loader.settings
+    kubeconfig_manager = Kubernetes::KubeconfigManager.new(loader, settings, Util::SSH.new("/tmp/key"))
+    Kubernetes::Script::MasterGenerator.new(loader, settings).generate_script(master, [master], master, nil, kubeconfig_manager).should_not contain("flannel-conf")
+    Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first).should_not contain("flannel-conf")
+  end
+end

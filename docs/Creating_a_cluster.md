@@ -555,6 +555,7 @@ list, and installs k3s with `--node-ip=<private_ip>` on the VLAN interface.
 
 Cluster-wide consequences, applied automatically:
 
+- Robot nodes on the private network get the local firewall (static allow list = the network range), so `allowed_networks.ssh` / `.api` apply to them too; `0.0.0.0/0` is expanded into `0.0.0.0/1` and `128.0.0.0/1` because an ipset cannot hold a `/0` entry
 - When a Robot pool uses the private network, the CCM's route controller is disabled
   (`HCLOUD_NETWORK_ROUTES_ENABLED=false`): Hetzner does not accept dedicated servers as route
   gateways. Flannel and Cilium in tunnel mode never used those routes; Cilium

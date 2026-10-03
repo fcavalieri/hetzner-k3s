@@ -9,6 +9,7 @@ class Hetzner::Network
   property ip_range : String = ""
   property subnets : Array(Hetzner::NetworkSubnet) = [] of Hetzner::NetworkSubnet
   property servers : Array(Int64) = [] of Int64
+  property load_balancers : Array(Int64) = [] of Int64
 
   def vswitch_subnet : Hetzner::NetworkSubnet?
     subnets.find(&.vswitch?)

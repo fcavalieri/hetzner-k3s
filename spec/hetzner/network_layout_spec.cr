@@ -35,6 +35,15 @@ class FakeHetznerClient < Hetzner::Client
   end
 end
 
+# Hetzner's refusal of change_ip_range while members are attached (verified 2026-10-03).
+class RefusingHetznerClient < FakeHetznerClient
+  def post(path, params)
+    calls << "POST #{path} #{params.to_json}"
+    return {false, %({"error":{"code":"service_error","message":"network has attached resources","details":null}})} if path.ends_with?("/actions/change_ip_range")
+    super
+  end
+end
+
 # ip_range nil leaves the key out (a configuration without the new keys).
 def layout_settings(ip_range : String? = "10.0.0.0/15", vswitch = true) : Configuration::Main
   vs = vswitch ? "    vswitch:\n      vlan: 4000\n      subnet: 10.1.0.0/24\n" : ""
@@ -82,6 +91,21 @@ describe Hetzner::Network::EnsureLayout do
     network = Hetzner::Network::EnsureLayout.new(layout_settings(vswitch: false), client, network_of(client), "eu-central", nil).run
     client.calls.should contain(%(POST /networks/1/actions/change_ip_range {"ip_range":"10.0.0.0/15"}))
     network.ip_range.should eq("10.0.0.0/15")
+  end
+
+  it "refuses to extend while servers or load balancers are attached, naming them" do
+    client = FakeHetznerClient.new(LIVE_16.sub(%("servers":[]), %("servers":[11,12],"load_balancers":[7])))
+    ex = expect_raises(Exception) { Hetzner::Network::EnsureLayout.new(layout_settings, client, network_of(client), "eu-central", nil).run }
+    ex.message.not_nil!.should contain("while resources are attached: servers 11, 12; load balancers 7")
+    ex.message.not_nil!.should contain("scripts/extend-network-range.sh")
+    client.calls.any? { |c| c.includes?("change_ip_range") }.should be_false
+  end
+
+  it "does not retry when Hetzner reports attached resources" do
+    client = RefusingHetznerClient.new(LIVE_16)
+    ex = expect_raises(Exception) { Hetzner::Network::EnsureLayout.new(layout_settings, client, network_of(client), "eu-central", nil).run }
+    ex.message.not_nil!.should contain("while resources are attached")
+    client.calls.count { |c| c.includes?("change_ip_range") }.should eq(1)
   end
 
   it "refuses a configured range that does not contain the live one" do

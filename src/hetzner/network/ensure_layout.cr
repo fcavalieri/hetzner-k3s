@@ -13,6 +13,11 @@ require "../../configuration/main"
 class Hetzner::Network::EnsureLayout
   include Util
 
+  # Raised inside run_action for failures worth another attempt; anything else propagates at once.
+  class RetryableActionError < Exception; end
+
+  ATTACHED_RESOURCES_MESSAGE = "network has attached resources"
+
   WAIT_ATTEMPTS = 12
   WAIT_INTERVAL = 5.seconds
 
@@ -46,6 +51,11 @@ class Hetzner::Network::EnsureLayout
       raise "Private network #{network.name} has ip_range #{current}, which the configured ip_range #{desired} does not contain; Hetzner networks can only be extended, never shrunk or moved"
     end
 
+    # Hetzner refuses change_ip_range as soon as one server or load balancer is attached (undocumented;
+    # verified 2026-10-03). Say so up front, with the members, instead of discovering it ten retries later.
+    attached = attached_resources
+    raise attached_resources_message(current, desired, attached) unless attached.empty?
+
     log_line "Extending private network #{network.name} from #{current} to #{desired}..."
     run_action("/networks/#{network.id}/actions/change_ip_range", {:ip_range => desired}, "extend private network")
     wait_until("ip_range #{desired}") { |refreshed| refreshed.ip_range == desired }
@@ -72,15 +82,29 @@ class Hetzner::Network::EnsureLayout
     log_line "...vSwitch subnet added"
   end
 
-  private def run_action(path : String, params, what : String)
-    Retriable.retry(max_attempts: 10, backoff: false, base_interval: 5.seconds) do
-      success, response = hetzner_client.post(path, params)
+  private def attached_resources : String
+    parts = [] of String
+    parts << "servers #{network.servers.join(", ")}" unless network.servers.empty?
+    parts << "load balancers #{network.load_balancers.join(", ")}" unless network.load_balancers.empty?
+    parts.join("; ")
+  end
 
-      unless success
-        STDERR.puts "[#{default_log_prefix}] Failed to #{what}: #{response}"
-        STDERR.puts "[#{default_log_prefix}] Retrying to #{what} in 5 seconds..."
-        raise "Failed to #{what}"
-      end
+  private def attached_resources_message(current : String, desired : String, attached : String) : String
+    "Hetzner refuses to change the ip_range of private network #{network.name} (#{current} -> #{desired}) while resources are attached: #{attached}. " \
+    "Detach every member, extend the range and re-attach each member with its original IP; scripts/extend-network-range.sh in the hetzner-k3s repository does exactly that " \
+    "(about a minute without private-network connectivity, and the flannel VXLAN device is lost until k3s restarts on every node, which `create` then does). Run create again afterwards."
+  end
+
+  private def run_action(path : String, params, what : String)
+    Retriable.retry(on: RetryableActionError, max_attempts: 10, backoff: false, base_interval: 5.seconds) do
+      success, response = hetzner_client.post(path, params)
+      next if success
+
+      STDERR.puts "[#{default_log_prefix}] Failed to #{what}: #{response}"
+      raise "Failed to #{what}: #{attached_resources_message(network.ip_range, settings.networking.private_network.effective_ip_range, attached_resources.presence || "see the Hetzner console")}" if response.includes?(ATTACHED_RESOURCES_MESSAGE)
+
+      STDERR.puts "[#{default_log_prefix}] Retrying to #{what} in 5 seconds..."
+      raise RetryableActionError.new("Failed to #{what}")
     end
   end
 

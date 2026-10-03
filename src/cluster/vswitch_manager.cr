@@ -7,13 +7,19 @@ class Cluster::VSwitchManager
 
   POLL_INTERVAL = 10.seconds
   READY_TIMEOUT = 5.minutes
+  # Robot keeps a cancelled vSwitch's VLAN bound to its servers for a few minutes after the
+  # vSwitch has disappeared from the listing (measured 2026-10-03: 3.5 min); attaching the same
+  # VLAN again meanwhile is refused with 409 VSWITCH_VLAN_NOT_UNIQUE.
+  VLAN_RELEASE_TIMEOUT = 10.minutes
+  VLAN_NOT_UNIQUE      = "VSWITCH_VLAN_NOT_UNIQUE"
 
   private getter settings : Configuration::Main
   private getter robot_client : Hetzner::Robot::Client
   private getter poll_interval : Time::Span
   private getter ready_timeout : Time::Span
+  private getter vlan_release_timeout : Time::Span
 
-  def initialize(@settings, @robot_client, @poll_interval = POLL_INTERVAL, @ready_timeout = READY_TIMEOUT)
+  def initialize(@settings, @robot_client, @poll_interval = POLL_INTERVAL, @ready_timeout = READY_TIMEOUT, @vlan_release_timeout = VLAN_RELEASE_TIMEOUT)
   end
 
   def self.for(settings : Configuration::Main) : Cluster::VSwitchManager?
@@ -150,8 +156,25 @@ class Cluster::VSwitchManager
     return false if missing.empty?
 
     log_line "Attaching Robot server(s) #{missing.join(", ")} to vSwitch #{vswitch.id}..."
-    robot_client.add_vswitch_servers(vswitch.id, missing)
+    attach_when_vlan_released(vswitch, missing)
     true
+  end
+
+  # Retries the attach while Robot still reports the VLAN as in use on the server (a vSwitch
+  # cancelled a few minutes ago); any other Robot error propagates unchanged.
+  private def attach_when_vlan_released(vswitch, numbers : Array(Int32)) : Nil
+    deadline = Time.instant + vlan_release_timeout
+    loop do
+      robot_client.add_vswitch_servers(vswitch.id, numbers)
+      return
+    rescue ex : Hetzner::Robot::Client::Error
+      raise ex unless ex.message.to_s.includes?(VLAN_NOT_UNIQUE)
+      if Time.instant > deadline
+        raise "VLAN #{vswitch.vlan} is still in use on Robot server(s) #{numbers.join(", ")} after #{vlan_release_timeout.total_minutes.to_i} minutes; a cancelled vSwitch keeps its VLAN for a few minutes, another vSwitch may hold it for good — wait, or pick another vlan: #{ex.message}"
+      end
+      log_line "VLAN #{vswitch.vlan} is still held on server(s) #{numbers.join(", ")} (a cancelled vSwitch releases it after a few minutes), retrying in #{poll_interval.total_seconds.to_i} s..."
+      sleep poll_interval
+    end
   end
 
   private def wait_until_ready(id : Int32) : Nil

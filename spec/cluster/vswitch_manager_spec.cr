@@ -34,8 +34,14 @@ class FakeRobotClient < Hetzner::Robot::Client
     created
   end
 
+  property vlan_busy_rejections = 0   # how many attach calls still fail with 409 VSWITCH_VLAN_NOT_UNIQUE
+
   def add_vswitch_servers(id : Int32, numbers : Array(Int32)) : Nil
     calls << "add #{id} #{numbers.join(",")}"
+    if vlan_busy_rejections > 0
+      self.vlan_busy_rejections -= 1
+      raise Hetzner::Robot::Client::Error.new(%(Failed to add server(s) #{numbers.join(", ")} to Robot vSwitch #{id}: {"error":{"status":409,"code":"VSWITCH_VLAN_NOT_UNIQUE","message":"vlan of vswitch is already in use at server Server Auction ##{numbers.first}, please change vlan"}}))
+    end
     data.find { |v| v.id == id }.not_nil!.servers.concat(numbers.map { |n| RVSS.new(n, "in process") })
   end
 
@@ -111,6 +117,20 @@ describe Cluster::VSwitchManager do
   it "refuses a vlan mismatch" do
     client = FakeRobotClient.new([RVS.new(4321, "test", 4005, [] of RVSS)])
     expect_raises(Exception, /VLAN 4005/) { Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute).ensure }
+  end
+
+  it "waits for Robot to release the VLAN of a vSwitch cancelled moments ago" do
+    client = FakeRobotClient.new([RVS.new(4321, "test", 4000, [] of RVSS)], ["in process", "ready"])
+    client.vlan_busy_rejections = 2
+    Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute, 1.minute).ensure.should eq(4321)
+    client.calls.count { |c| c.starts_with?("add 4321 42") }.should eq(3)
+  end
+
+  it "gives up on a VLAN that stays in use past the release deadline" do
+    client = FakeRobotClient.new([RVS.new(4321, "test", 4000, [] of RVSS)])
+    client.vlan_busy_rejections = 1_000
+    ex = expect_raises(Exception, /VLAN 4000 is still in use on Robot server\(s\) 42/) { Cluster::VSwitchManager.new(manager_settings, client, 0.seconds, 1.minute, 0.seconds).ensure }
+    ex.message.not_nil!.should contain("VSWITCH_VLAN_NOT_UNIQUE")
   end
 
   it "aborts on a failed server status instead of waiting" do

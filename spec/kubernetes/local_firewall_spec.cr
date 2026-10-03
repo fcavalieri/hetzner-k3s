@@ -23,6 +23,14 @@ def run_fetch_node_ips(script : String, static : String) : String
   output.to_s
 end
 
+# Runs only normalise_networks() out of the rendered script on the given stdin.
+def run_normalise_networks(script : String, input : String) : String
+  body = script[/^normalise_networks\(\) \{.*?^\}/m]
+  output = IO::Memory.new
+  Process.run("bash", ["-c", "#{body}; normalise_networks"], input: IO::Memory.new(input), output: output)
+  output.to_s
+end
+
 describe Kubernetes::LocalFirewall::Setup do
   it "renders static mode with the network range and no query server" do
     settings = firewall_settings("networking:\n  private_network:\n    ip_range: 10.0.0.0/15\n    subnet: 10.0.0.0/16\n")
@@ -41,5 +49,14 @@ describe Kubernetes::LocalFirewall::Setup do
     script.should contain(%(STATIC_NODE_NETWORKS=""))
     script.should contain(%(HETZNER_TOKEN="#{FIREWALL_SPEC_TOKEN}"))
     run_fetch_node_ips(script, "").should eq("")   # unreachable server, no cache: empty, exit 1
+  end
+
+  it "expands 0.0.0.0/0 into the two /1 halves ipset can hold, and keeps other entries" do
+    settings = firewall_settings("networking:\n  private_network:\n    ip_range: 10.0.0.0/15\n    subnet: 10.0.0.0/16\n")
+    script = RenderableFirewall.new(settings, Util::SSH.new("/tmp/key")).render(22, "10.0.0.0/15")
+    # Acceptance 2026-10-03: allowed_networks.ssh: [0.0.0.0/0] left the ipset empty and the Robot node dropped all SSH.
+    run_normalise_networks(script, "0.0.0.0/0\n").should eq("0.0.0.0/1\n128.0.0.0/1\n")
+    run_normalise_networks(script, "203.0.113.0/24\n0.0.0.0/0\n198.51.100.7\n\n# comment\n").should eq("0.0.0.0/1\n128.0.0.0/1\n198.51.100.7/32\n203.0.113.0/24\n")
+    run_normalise_networks(script, "0.0.0.0/1\n").should eq("0.0.0.0/1\n")
   end
 end

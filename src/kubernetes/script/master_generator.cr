@@ -4,6 +4,7 @@ require "../../configuration/main"
 require "../../configuration/loader"
 require "../deployment_helper"
 require "../util"
+require "./flannel_conf"
 require "./labels_and_taints_generator"
 
 class Kubernetes::Script::MasterGenerator
@@ -60,6 +61,7 @@ class Kubernetes::Script::MasterGenerator
       labels_and_taints:      labels_and_taints,
       additional_post_k3s_commands: post_k3s_commands,
       kube_proxy_enabled:             @settings.networking.cni.kube_proxy?.to_s,
+      flannel_net_conf:             Kubernetes::Script::FlannelConf.render(@settings),
     })
   end
 

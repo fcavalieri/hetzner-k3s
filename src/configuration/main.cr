@@ -4,6 +4,7 @@ require "./models/master_node_pool"
 require "./models/worker_node_pool"
 require "./models/datastore"
 require "./models/addons"
+require "./models/networking"
 
 class Configuration::Main
   include YAML::Serializable
@@ -62,6 +63,14 @@ class Configuration::Main
 
     external = pool.external.not_nil!
     {user: external.robot_user, password: external.robot_password}
+  end
+
+  def robot_private_network? : Bool
+    networking.private_network.enabled && external_robot_node_pools?
+  end
+
+  def robot_external_nodes : Array(Configuration::Models::ExternalNode)
+    external_robot_node_pools.flat_map { |pool| pool.external.not_nil!.nodes }
   end
 
   def external_worker_hostname(pool : Configuration::Models::NodePool, index : Int32) : String

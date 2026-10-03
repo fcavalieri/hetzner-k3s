@@ -119,6 +119,15 @@ cat >/etc/rancher/k3s/registries.yaml <<\EOF
 {{ private_registry_config | trim }}
 EOF
 
+# Flannel config override: makes every node assume the vSwitch MTU (see Kubernetes::Script::FlannelConf)
+FLANNEL_CONF_ARG=""
+{% if flannel_net_conf != "" %}
+cat >/etc/rancher/k3s/flannel-net-conf.json <<\FLANNELCONF
+{{ flannel_net_conf }}
+FLANNELCONF
+FLANNEL_CONF_ARG="--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json"
+{% endif %}
+
 # Get instance ID for public network
 KUBELET_INSTANCE_ID=""
 if [ "{{ private_network_enabled }}" = "false" ]; then
@@ -163,6 +172,7 @@ curl -sfL https://get.k3s.io | \
     {{ master_taint }} {{ labels_and_taints }} {{ extra_args }} {{ etcd_arguments }} \
     $KUBELET_INSTANCE_ID \
     $FLANNEL_SETTINGS \
+    $FLANNEL_CONF_ARG \
     $EMBEDDED_REGISTRY_MIRROR \
     $LOCAL_PATH_STORAGE_CLASS \
     --advertise-address=$PRIVATE_IP \

@@ -36,6 +36,19 @@ class Kubernetes::LocalFirewall::Setup
     log_line "...local firewall deployed", instance.name
   end
 
+  # External nodes have no Hetzner Cloud Firewall, so they always get the local one:
+  # polling the IP query server on the public network, a static allow list of the
+  # private network range when the cluster keeps the private network.
+  def deploy_external(instance : Hetzner::Instance, ssh : ::Util::SSH, port : Int32, use_sudo : Bool = false) : Nil
+    return deploy_with_ssh(instance, ssh, port, use_sudo) if local_firewall_enabled?
+    return unless settings.networking.private_network.enabled
+
+    log_line "Deploying local firewall (static allow list #{settings.networking.private_network.effective_ip_range})...", instance.name
+    deploy_firewall_files_with_ssh(instance, ssh, port, false, use_sudo, settings.networking.private_network.effective_ip_range)
+    ensure_firewall_running_with_ssh(instance, ssh, port, false, use_sudo)
+    log_line "...local firewall deployed", instance.name
+  end
+
   def deploy_to_all_nodes(first_master : Hetzner::Instance, known_instances : Array(Hetzner::Instance)) : Nil
     return unless local_firewall_enabled?
 
@@ -80,8 +93,8 @@ class Kubernetes::LocalFirewall::Setup
     !settings.networking.private_network.enabled && settings.networking.public_network.use_local_firewall
   end
 
-  private def deploy_firewall_files_with_ssh(instance : Hetzner::Instance, ssh : ::Util::SSH, port : Int32, use_ssh_agent : Bool, use_sudo : Bool = false) : Nil
-    firewall_script_b64 = Base64.strict_encode(render_firewall_script(port))
+  private def deploy_firewall_files_with_ssh(instance : Hetzner::Instance, ssh : ::Util::SSH, port : Int32, use_ssh_agent : Bool, use_sudo : Bool = false, static_node_networks : String = "") : Nil
+    firewall_script_b64 = Base64.strict_encode(render_firewall_script(port, static_node_networks))
     firewall_service_b64 = Base64.strict_encode(FIREWALL_SERVICE)
     firewall_status_b64 = Base64.strict_encode(render_firewall_status(port))
     ssh_networks_b64 = Base64.strict_encode(allowed_ssh_networks)
@@ -133,10 +146,13 @@ class Kubernetes::LocalFirewall::Setup
     ssh.run(instance, port, script, use_ssh_agent)
   end
 
-  private def render_firewall_script(ssh_port : Int32 = settings.networking.ssh.port) : String
+  # Static mode never polls the IP query server, so the script carries no Hetzner token: the
+  # external node it lands on is not a Hetzner Cloud server and has no business holding it.
+  private def render_firewall_script(ssh_port : Int32 = settings.networking.ssh.port, static_node_networks : String = "") : String
     Crinja.render(FIREWALL_SCRIPT, {
-      hetzner_token:                settings.hetzner_token,
-      hetzner_ips_query_server_url: settings.networking.public_network.hetzner_ips_query_server_url,
+      hetzner_token:                static_node_networks.empty? ? settings.hetzner_token : "",
+      hetzner_ips_query_server_url: settings.networking.public_network.hetzner_ips_query_server_url || "",
+      static_node_networks:         static_node_networks,
       ssh_port:                     ssh_port,
       cluster_cidr:                 settings.networking.cluster_cidr,
       service_cidr:                 settings.networking.service_cidr,

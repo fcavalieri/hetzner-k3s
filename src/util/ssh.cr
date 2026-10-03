@@ -25,6 +25,12 @@ class Util::SSH
   def initialize(@private_ssh_key_path, @public_ssh_key_path = "", @prefer_private_ip = false, @user = "root")
   end
 
+  # The exit code tells ssh's own failures (255: connection failed or dropped) apart from the
+  # remote command's; "none" when ssh was killed by a signal.
+  def self.failure_message(instance_name : String, exit_code : Int32 | String, error_msg : String) : String
+    "SSH command failed on #{instance_name} (exit code: #{exit_code}): #{error_msg}"
+  end
+
   def self.calculate_fingerprint(public_ssh_key_path)
     private_key = File.read(public_ssh_key_path).split[1]
     Digest::MD5.hexdigest(Base64.decode(private_key)).chars.each_slice(2).map(&.join).join(":")
@@ -123,7 +129,7 @@ class Util::SSH
       error_msg = stderr.to_s.strip
       log_line "SSH command failed (exit code: #{status.exit_code}): #{error_msg}",
         log_prefix: "Instance #{instance.name}" if debug
-      raise IO::Error.new("SSH command failed on #{instance.name}: #{error_msg}")
+      raise IO::Error.new(self.class.failure_message(instance.name, status.exit_code? || "none", error_msg))
     end
 
     # Return captured output

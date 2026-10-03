@@ -11,6 +11,7 @@ trap 'log "ERROR: Command failed at line $LINENO: $BASH_COMMAND"; exit 1' ERR
 # Configuration (injected via Crinja templating)
 readonly HETZNER_TOKEN="{{ hetzner_token }}"
 readonly HETZNER_IPS_URL="{{ hetzner_ips_query_server_url }}/ips"
+readonly STATIC_NODE_NETWORKS="{{ static_node_networks }}"
 readonly SSH_PORT="{{ ssh_port }}"
 readonly CLUSTER_CIDR="{{ cluster_cidr }}"
 readonly SERVICE_CIDR="{{ service_cidr }}"
@@ -48,6 +49,9 @@ validate_ip_network() {
     [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]
 }
 
+# ipset hash:net cannot hold a /0 entry: 0.0.0.0/0 (the usual "allow everyone") is expanded into
+# 0.0.0.0/1 + 128.0.0.0/1 here, so the set really matches every address and the change detection
+# below compares like with like.
 normalise_networks() {
     # Use || true to handle empty input gracefully with pipefail
     { grep -v '^[[:space:]]*$' || true; } | \
@@ -55,6 +59,7 @@ normalise_networks() {
     tr -d '\r' | \
     sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
     sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$/\1\/32/' | \
+    sed -E 's#^0\.0\.0\.0/0$#0.0.0.0/1\n128.0.0.0/1#' | \
     sort -u || true
 }
 
@@ -139,6 +144,8 @@ update_ipset() {
         if [ -n "$network" ] && validate_ip_network "$network"; then
             if ipset add "$temp_name" "$network" 2>/dev/null; then
                 count=$((count + 1))
+            else
+                log "Updated ipset '$name': ipset rejected entry '$network'"
             fi
         fi
     done <<< "$new"
@@ -236,6 +243,12 @@ restore_iptables() {
 # =============================================================================
 
 fetch_node_ips() {
+    # Private-network mode: the allowed node networks are fixed, no query server involved
+    if [ -n "$STATIC_NODE_NETWORKS" ]; then
+        echo "$STATIC_NODE_NETWORKS" | tr ',' '\n'
+        return 0
+    fi
+
     local attempt=0
 
     while [ $attempt -lt $API_RETRIES ]; do

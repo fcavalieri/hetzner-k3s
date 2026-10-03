@@ -1,0 +1,13 @@
+# Managed by hetzner-k3s: VLAN interface for the Hetzner vSwitch (do not edit by hand)
+network:
+  version: 2
+  vlans:
+    {{ vlan_interface }}:
+      id: {{ vlan_id }}
+      link: {{ parent_interface }}
+      mtu: {{ mtu }}
+      addresses:
+        - {{ private_ip }}/{{ prefix }}
+      routes:
+        - to: {{ ip_range }}
+          via: {{ gateway }}

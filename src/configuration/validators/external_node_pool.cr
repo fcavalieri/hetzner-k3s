@@ -10,13 +10,20 @@ class Configuration::Validators::ExternalNodePool
   end
 
   def validate
-    # Rule #1: private network must be disabled
-    unless !settings.networking.private_network.enabled
-      errors << "External node pool '#{pool.name}' requires the private network to be disabled (set networking.private_network.enabled to false)"
+    external_config = pool.external
+    private_network = settings.networking.private_network
+
+    # Rule #1: only Robot pools may use the private network, and only through a vSwitch
+    if private_network.enabled
+      if external_config.nil? || !external_config.robot?
+        errors << "External node pool '#{pool.name}' requires the private network to be disabled (set networking.private_network.enabled to false); only Robot pools can join the private network through a vSwitch"
+      elsif private_network.vswitch.nil?
+        errors << "External node pool '#{pool.name}' uses the private network, so networking.private_network.vswitch must be configured"
+      end
     end
 
-    # Rule #2: local firewall must be enabled
-    unless settings.networking.public_network.use_local_firewall
+    # Rule #2: on the public network the local firewall is mandatory
+    if !private_network.enabled && !settings.networking.public_network.use_local_firewall
       errors << "External node pool '#{pool.name}' requires the local firewall (set networking.public_network.use_local_firewall to true)"
     end
 
@@ -78,6 +85,8 @@ class Configuration::Validators::ExternalNodePool
     end
 
     validate_robot_config(external_config) if external_config.robot?
+    validate_private_ips(external_config) if external_config.robot? && private_network.enabled
+    validate_vlan_parent_interfaces(external_config)
   end
 
   private def validate_provider(external_config)
@@ -116,6 +125,49 @@ class Configuration::Validators::ExternalNodePool
     duplicate_server_numbers = robot_server_numbers_in_other_pools & server_numbers
     unless duplicate_server_numbers.empty?
       errors << "External node pool '#{pool.name}' reuses robot_server_number values already used by another external Robot pool: #{duplicate_server_numbers.join(", ")}"
+    end
+  end
+
+  private def validate_private_ips(external_config)
+    vswitch = settings.networking.private_network.vswitch
+    return if vswitch.nil?
+
+    missing = external_config.nodes.select { |node| node.private_ip.nil? }.map(&.host)
+    errors << "External node pool '#{pool.name}' uses the private network but nodes are missing private_ip: #{missing.join(", ")}" unless missing.empty?
+
+    external_config.nodes.each do |node|
+      private_ip = node.private_ip
+      next if private_ip.nil?
+
+      unless vswitch.contains?(private_ip)
+        errors << "External node #{node.host} has private_ip #{private_ip} outside the vswitch subnet #{vswitch.subnet}"
+        next
+      end
+      case private_ip
+      when vswitch.gateway
+        errors << "External node #{node.host} has private_ip #{private_ip}, which is the vswitch subnet gateway"
+      when vswitch.network_address
+        errors << "External node #{node.host} has private_ip #{private_ip}, which is the vswitch subnet's network address"
+      when vswitch.broadcast_address
+        errors << "External node #{node.host} has private_ip #{private_ip}, which is the vswitch subnet's broadcast address"
+      end
+    end
+
+    all_ips = settings.robot_external_nodes.compact_map(&.private_ip)
+    duplicates = all_ips.tally.select { |_, count| count > 1 }.keys
+    errors << "External node pool '#{pool.name}' has duplicate private_ip values across Robot pools: #{duplicates.join(", ")}" unless duplicates.empty?
+  end
+
+  # A Linux interface name: at most 15 characters (IFNAMSIZ), no spaces or shell syntax.
+  VLAN_PARENT_INTERFACE_PATTERN = /\A[A-Za-z0-9_.:-]{1,15}\z/
+
+  private def validate_vlan_parent_interfaces(external_config)
+    external_config.nodes.each do |node|
+      parent = node.vlan_parent_interface
+      next if parent.nil? || parent.empty?
+      next if parent.matches?(VLAN_PARENT_INTERFACE_PATTERN)
+
+      errors << "External node #{node.host} has vlan_parent_interface '#{parent}', which is not a Linux interface name (1 to 15 of the characters A-Z a-z 0-9 _ . : -)"
     end
   end
 

@@ -49,3 +49,7 @@ egressGateway:
 # BPF settings
 bpf:
   masquerade: {{ egress_gateway_enabled }}
+{% if mtu %}
+# Underlying network MTU (Robot vSwitch in the path); Cilium subtracts its own encapsulation overhead
+MTU: {{ mtu }}
+{% endif %}

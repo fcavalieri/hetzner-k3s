@@ -31,7 +31,7 @@ class Hetzner::Network::Create
   private def network_config
     {
       :name     => network_name,
-      :ip_range => settings.networking.private_network.subnet,
+      :ip_range => settings.networking.private_network.effective_ip_range,
       :subnets  => [
         {
           :ip_range     => settings.networking.private_network.subnet,

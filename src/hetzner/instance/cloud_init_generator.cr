@@ -63,7 +63,8 @@ class Hetzner::Instance::CloudInitGenerator
   private def firewall_script
     script = Crinja.render(FIREWALL_SCRIPT, {
       hetzner_token:                @settings.hetzner_token,
-      hetzner_ips_query_server_url: @settings.networking.public_network.hetzner_ips_query_server_url,
+      hetzner_ips_query_server_url: @settings.networking.public_network.hetzner_ips_query_server_url || "",
+      static_node_networks:         "",
       ssh_port:                     @settings.networking.ssh.port,
       cluster_cidr:                 @settings.networking.cluster_cidr,
       service_cidr:                 @settings.networking.service_cidr,

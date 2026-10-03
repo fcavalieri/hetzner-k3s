@@ -1,4 +1,5 @@
 require "../client"
+require "../instance"
 require "./find"
 require "../../util"
 require "../../configuration/models/networking"
@@ -138,7 +139,7 @@ class Hetzner::Firewall::Create
           :direction       => "in",
           :protocol        => "tcp",
           :port            => "any",
-          :source_ips      => [private_network.subnet],
+          :source_ips      => [private_network.effective_ip_range],
           :destination_ips => [] of String,
         },
         {
@@ -146,7 +147,7 @@ class Hetzner::Firewall::Create
           :direction       => "in",
           :protocol        => "udp",
           :port            => "any",
-          :source_ips      => [private_network.subnet],
+          :source_ips      => [private_network.effective_ip_range],
           :destination_ips => [] of String,
         },
       ]

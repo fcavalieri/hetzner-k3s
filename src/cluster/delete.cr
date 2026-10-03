@@ -2,6 +2,8 @@ require "../configuration/loader"
 require "../hetzner/ssh_key/delete"
 require "../hetzner/firewall/delete"
 require "../hetzner/network/delete"
+require "../hetzner/network/delete_subnet"
+require "../hetzner/network/find"
 require "../hetzner/instance/delete"
 require "../hetzner/load_balancer/delete"
 require "../hetzner/placement_group/delete"
@@ -11,6 +13,8 @@ require "../util/shell"
 require "../util"
 require "../util/ssh"
 require "./node_detection"
+require "../kubernetes/worker/vlan_setup"
+require "./vswitch_manager"
 
 class Cluster::Delete
   include Util
@@ -70,6 +74,9 @@ class Cluster::Delete
     delete_network if settings.networking.private_network.enabled
     delete_firewall if settings.networking.private_network.enabled || !settings.networking.public_network.use_local_firewall
     delete_ssh_key
+    # The vSwitch coupling goes last, so a refused Robot call never leaves cloud resources behind.
+    remove_vswitch_subnet if vswitch_subnet_on_surviving_network?
+    cleanup_vswitch if settings.robot_private_network?
   end
 
   private def cleanup_external_nodes
@@ -105,6 +112,12 @@ class Cluster::Delete
 
       # 2. Remove firewall and reset packet filtering so the node is left open.
       ssh.run(instance, node.ssh_port, firewall_cleanup_command(use_sudo), false, print_output: false)
+
+      # 3. Remove the vSwitch VLAN interface hetzner-k3s configured, if any.
+      if settings.robot_private_network?
+        vlan = settings.networking.private_network.vswitch.not_nil!.vlan
+        ssh.run(instance, node.ssh_port, "#{sudo_prefix(use_sudo)}bash -c '#{Kubernetes::Worker::VlanSetup.cleanup_command(vlan).gsub("'", "'\\''")}'", false, print_output: false)
+      end
 
       log_line "Cleaned up external node #{node.host}"
     rescue ex
@@ -219,6 +232,37 @@ class Cluster::Delete
       hetzner_client: hetzner_client,
       network_name: settings.cluster_name
     ).run
+  end
+
+  # An existing network (existing_network_name) survives `delete`, so the vSwitch subnet create
+  # added to it is removed explicitly. A network hetzner-k3s created is already gone with it.
+  # create adds the subnet only when a Robot pool uses the private network.
+  private def vswitch_subnet_on_surviving_network? : Bool
+    private_network = settings.networking.private_network
+    settings.robot_private_network? && !private_network.existing_network_name.empty? && !private_network.vswitch.nil?
+  end
+
+  private def remove_vswitch_subnet
+    private_network = settings.networking.private_network
+    network = Hetzner::Network::Find.new(hetzner_client, private_network.existing_network_name).run
+    return if network.nil?
+
+    Hetzner::Network::DeleteSubnet.new(hetzner_client, network, private_network.vswitch.not_nil!.subnet).run
+  rescue ex
+    log_line "#{force ? "Warning" : "Error"}: removing the vSwitch subnet failed: #{ex.message}"
+    exit 1 unless force
+  end
+
+  # The cloud side of the coupling is gone by now (with the network, or removed above); detach
+  # this cluster's servers and drop the vSwitch if hetzner-k3s created it.
+  private def cleanup_vswitch
+    manager = Cluster::VSwitchManager.for(settings)
+    return unless manager
+
+    manager.cleanup
+  rescue ex
+    log_line "#{force ? "Warning" : "Error"}: vSwitch cleanup failed: #{ex.message}"
+    exit 1 unless force
   end
 
   private def delete_firewall

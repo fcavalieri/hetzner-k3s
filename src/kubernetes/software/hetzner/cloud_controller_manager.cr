@@ -45,7 +45,16 @@ class Kubernetes::Software::Hetzner::CloudControllerManager
 
   private def patch_robot_enabled(manifest : String) : String
     return manifest unless settings.external_robot_node_pools?
-    return manifest if manifest.includes?("name: ROBOT_ENABLED")
+
+    manifest = insert_env(manifest, "ROBOT_ENABLED", "true")
+    # Hetzner refuses dedicated servers as route gateways and the CCM documents its route
+    # controller as incompatible with vSwitches: switch it off, the CNI tunnels pod traffic.
+    manifest = insert_env(manifest, "HCLOUD_NETWORK_ROUTES_ENABLED", "false") if settings.robot_private_network?
+    manifest
+  end
+
+  private def insert_env(manifest : String, name : String, value : String) : String
+    return manifest if manifest.includes?("name: #{name}")
 
     manifest_lines = manifest.lines(chomp: false)
     robot_user_line_index = manifest_lines.index { |line| line.match(/^[ \t]*-[ \t]+name:[ \t]+ROBOT_USER[ \t]*$/) }
@@ -58,8 +67,8 @@ class Kubernetes::Software::Hetzner::CloudControllerManager
     item_indent = leading_whitespace(manifest_lines[robot_user_line_index])
     insertion_index = env_item_end_index(manifest_lines, robot_user_line_index, item_indent.size)
 
-    manifest_lines.insert(insertion_index, "#{item_indent}- name: ROBOT_ENABLED\n")
-    manifest_lines.insert(insertion_index + 1, "#{item_indent}  value: \"true\"\n")
+    manifest_lines.insert(insertion_index, "#{item_indent}- name: #{name}\n")
+    manifest_lines.insert(insertion_index + 1, "#{item_indent}  value: \"#{value}\"\n")
     manifest_lines.join
   end
 

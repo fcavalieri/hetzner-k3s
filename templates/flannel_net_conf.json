@@ -1,0 +1,7 @@
+{
+  "Network": "{{ cluster_cidr }}",
+  "EnableIPv4": true,
+  "EnableIPv6": false,
+  "IPv6Network": "::/0",
+  "Backend": {{ backend_json }}
+}

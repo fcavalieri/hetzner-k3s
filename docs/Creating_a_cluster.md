@@ -555,6 +555,7 @@ list, and installs k3s with `--node-ip=<private_ip>` on the VLAN interface.
 
 Cluster-wide consequences, applied automatically:
 
+- Because flannel never resizes an existing `flannel.1`, the install scripts delete one whose MTU differs from the configured value before (re)starting k3s, so an MTU change applies on the next `create` without manual steps (the wireguard backend's own device is left alone)
 - Robot nodes on the private network get the local firewall (static allow list = the network range), so `allowed_networks.ssh` / `.api` apply to them too; `0.0.0.0/0` is expanded into `0.0.0.0/1` and `128.0.0.0/1` because an ipset cannot hold a `/0` entry
 - When a Robot pool uses the private network, the CCM's route controller is disabled
   (`HCLOUD_NETWORK_ROUTES_ENABLED=false`): Hetzner does not accept dedicated servers as route

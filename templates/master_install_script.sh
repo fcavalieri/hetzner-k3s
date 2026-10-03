@@ -127,6 +127,13 @@ cat >/etc/rancher/k3s/flannel-net-conf.json <<\FLANNELCONF
 FLANNELCONF
 FLANNEL_CONF_ARG="--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json"
 {% endif %}
+{% if flannel_vxlan_mtu != "" %}
+# flannel never resizes an existing flannel.1: drop one with another MTU so the (re)install below recreates it at {{ flannel_vxlan_mtu }}
+if [ -e /sys/class/net/flannel.1 ] && [ "$(cat /sys/class/net/flannel.1/mtu)" != "{{ flannel_vxlan_mtu }}" ]; then
+  echo "flannel.1 has MTU $(cat /sys/class/net/flannel.1/mtu), expected {{ flannel_vxlan_mtu }}: deleting it so flannel recreates it" 2>&1 | tee -a /var/log/hetzner-k3s.log
+  ip link del flannel.1
+fi
+{% endif %}
 
 # Get instance ID for public network
 KUBELET_INSTANCE_ID=""

@@ -62,6 +62,7 @@ class Kubernetes::Script::MasterGenerator
       additional_post_k3s_commands: post_k3s_commands,
       kube_proxy_enabled:             @settings.networking.cni.kube_proxy?.to_s,
       flannel_net_conf:             Kubernetes::Script::FlannelConf.render(@settings),
+      flannel_vxlan_mtu:            Kubernetes::Script::FlannelConf.vxlan_device_mtu(@settings),
     })
   end
 

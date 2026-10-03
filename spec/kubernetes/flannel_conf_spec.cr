@@ -32,6 +32,13 @@ describe Kubernetes::Script::FlannelConf do
     Kubernetes::NetworkMTU.for(settings).should be_nil
     Kubernetes::Script::FlannelConf.render(settings).should eq("")
   end
+
+  it "reports the flannel.1 MTU flannel derives from the backend MTU, only for VXLAN" do
+    Kubernetes::Script::FlannelConf.vxlan_device_mtu(mtu_settings("flannel", false, true)).should eq("1350")
+    Kubernetes::Script::FlannelConf.vxlan_device_mtu(mtu_settings("flannel", true, true)).should eq("")
+    Kubernetes::Script::FlannelConf.vxlan_device_mtu(mtu_settings("flannel", false, false)).should eq("")
+    Kubernetes::Script::FlannelConf.vxlan_device_mtu(mtu_settings("cilium", false, true)).should eq("")
+  end
 end
 
 def mtu_settings_yaml_disabled : String

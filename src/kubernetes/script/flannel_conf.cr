@@ -13,6 +13,21 @@ module Kubernetes::Script::FlannelConf
     settings.networking.cni.flannel? && settings.networking.cni.encryption?
   end
 
+  # VXLAN header overhead flannel subtracts from the backend MTU for its flannel.1 device.
+  VXLAN_OVERHEAD = 50
+
+  # The MTU flannel gives flannel.1 under the rendered configuration, as a string for the
+  # install scripts; "" when no configuration is rendered or the backend is not VXLAN (the
+  # wireguard backend uses its own device). flannel never resizes an existing flannel.1, so
+  # the scripts delete a device with another MTU before (re)starting k3s (production rollout
+  # 2026-10-03: the workers kept MTU 1400 through a re-install).
+  def self.vxlan_device_mtu(settings : Configuration::Main) : String
+    mtu = Kubernetes::NetworkMTU.for(settings)
+    return "" if mtu.nil? || !settings.networking.cni.flannel? || wireguard?(settings)
+
+    (mtu - VXLAN_OVERHEAD).to_s
+  end
+
   def self.render(settings : Configuration::Main) : String
     mtu = Kubernetes::NetworkMTU.for(settings)
     return "" if mtu.nil? || !settings.networking.cni.flannel?

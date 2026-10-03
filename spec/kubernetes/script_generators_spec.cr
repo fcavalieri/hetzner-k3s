@@ -25,6 +25,19 @@ describe "install scripts" do
     worker_script.should contain(%("MTU": 1400))
   end
 
+  it "delete a flannel.1 with another MTU before the (re)install, on master and worker" do
+    loader = loader_for(BASE_CLUSTER + VSWITCH_NET)
+    settings = loader.settings
+    kubeconfig_manager = Kubernetes::KubeconfigManager.new(loader, settings, Util::SSH.new("/tmp/key"))
+    master_script = Kubernetes::Script::MasterGenerator.new(loader, settings).generate_script(master, [master], master, nil, kubeconfig_manager)
+    worker_script = Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first)
+    [master_script, worker_script].each do |script|
+      script.should contain(%(if [ -e /sys/class/net/flannel.1 ] && [ "$(cat /sys/class/net/flannel.1/mtu)" != "1350" ]; then))
+      script.should contain("ip link del flannel.1")
+      script.index("ip link del flannel.1").not_nil!.should be < script.index("curl -sfL https://get.k3s.io").not_nil!
+    end
+  end
+
   it "pass the wireguard backend and MTU when encryption is on" do
     net = VSWITCH_NET.sub("encryption: false", "mode: flannel\n    encryption: true")
     loader = loader_for(BASE_CLUSTER + net)
@@ -36,6 +49,7 @@ describe "install scripts" do
     [master_script, worker_script].each do |script|
       script.should contain(%("Type": "wireguard", "PersistentKeepaliveInterval": 25, "MTU": 1400))
       script.should contain("--flannel-conf=/etc/rancher/k3s/flannel-net-conf.json")
+      script.should_not contain("ip link del flannel.1")   # the wireguard backend has its own device
     end
   end
 
@@ -45,6 +59,7 @@ describe "install scripts" do
     kubeconfig_manager = Kubernetes::KubeconfigManager.new(loader, settings, Util::SSH.new("/tmp/key"))
     Kubernetes::Script::MasterGenerator.new(loader, settings).generate_script(master, [master], master, nil, kubeconfig_manager).should_not contain("flannel-conf")
     Kubernetes::Script::WorkerGenerator.new(loader, settings).generate_script([master], master, settings.worker_node_pools.first).should_not contain("flannel-conf")
+    Kubernetes::Script::MasterGenerator.new(loader, settings).generate_script(master, [master], master, nil, kubeconfig_manager).should_not contain("ip link del flannel.1")
   end
 
   it "uses the injected private IP and VLAN interface for a Robot node" do

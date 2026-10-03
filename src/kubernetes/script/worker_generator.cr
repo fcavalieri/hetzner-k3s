@@ -44,6 +44,7 @@ class Kubernetes::Script::WorkerGenerator
       kubelet_provider_id:          kubelet_provider_id(pool, external_node),
       external_node_name:           external_node_name(pool, external_node),
       flannel_net_conf:             Kubernetes::Script::FlannelConf.render(@settings),
+      flannel_vxlan_mtu:            Kubernetes::Script::FlannelConf.vxlan_device_mtu(@settings),
       external_private_ip:          external_node.try(&.private_ip) || "",
       external_vlan_interface:      vlan_interface || "",
     })
